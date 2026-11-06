@@ -147,15 +147,27 @@ function showStats(gpxText, c) {
   $('out').hidden = false;
 }
 
+// 크롬은 .gpx 형식의 공유를 막는 경우가 있어, 막히면 저장 방식으로 자동 전환합니다.
 $('share').onclick = async () => {
-  try {
-    if (navigator.canShare && navigator.canShare({files: [gpxFile]})) await navigator.share({files: [gpxFile], title: gpxFile.name});
-    else download();
-  } catch (e) { if (e.name !== 'AbortError') say(e.message, 'err'); }
+  const variants = [gpxFile, new File([gpxFile], gpxFile.name, {type: 'text/plain'})];
+  for (const f of variants) {
+    try {
+      if (navigator.canShare && navigator.canShare({files: [f]})) {
+        await navigator.share({files: [f], title: f.name});
+        return;
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return;   // 사용자가 공유창을 닫음
+    }
+  }
+  download();
 };
 $('download').onclick = download;
 function download() {
-  const a = document.createElement('a'); a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name; a.click();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name;
+  document.body.append(a); a.click(); a.remove();
+  say('저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script>
