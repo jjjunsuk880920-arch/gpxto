@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png">
+<title>GPXTo – 자전거 경로 만들어 보내기</title>
+<style>
+  :root{--bg:#0b0f14;--card:#141b23;--line:#243040;--txt:#e8eef4;--sub:#8fa1b3;--acc:#2dd4a0;--accd:#0b3d2f;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;
+       padding:max(20px,env(safe-area-inset-top)) 18px 40px;max-width:560px;margin-inline:auto;line-height:1.55}
+  h1{font-size:26px;margin:8px 0 4px;letter-spacing:-.5px} h1 span{color:var(--acc)}
+  .lead{color:var(--sub);font-size:14px;margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  textarea{width:100%;height:92px;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;
+           padding:12px;font-size:15px;resize:vertical;font-family:inherit}
+  textarea:focus{outline:2px solid var(--acc);border-color:transparent}
+  button{width:100%;padding:14px;margin-top:10px;font-size:16px;font-weight:600;border:0;border-radius:10px;
+         background:var(--acc);color:#04201a;cursor:pointer}
+  button.sub{background:#1d2834;color:var(--txt)} button:disabled{opacity:.5}
+  .cand{display:block;width:100%;text-align:left;background:#0e141b;border:1px solid var(--line);color:var(--txt);
+        font-weight:500;padding:12px;margin-top:8px;border-radius:10px}
+  .cand small{display:block;color:var(--sub);font-weight:400;margin-top:2px}
+  .cand.on{border-color:var(--acc);background:var(--accd)}
+  .status{font-size:14px;color:var(--sub);min-height:20px;margin-top:10px} .err{color:var(--err)} .ok{color:var(--acc)}
+  .stat{display:flex;gap:10px;margin-top:12px} .stat div{flex:1;background:#0e141b;border-radius:10px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:20px;color:var(--acc)} .stat span{font-size:12px;color:var(--sub)}
+  ol{margin:0;padding-left:20px;color:var(--sub);font-size:14px} li{margin:5px 0} li b{color:var(--txt)}
+  h2{font-size:15px;margin:0 0 8px} details summary{cursor:pointer;color:var(--sub);font-size:14px}
+  .small{color:var(--sub);font-size:12px;text-align:center;margin-top:20px}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<h1>GPX<span>To</span> 🚴</h1>
+<p class="lead">구글·네이버·카카오 지도 링크, 상호, 주소를 붙여넣으면 현재 위치에서 그곳까지의 도로 자전거 경로를 만들어 가민 커넥트 / IGPSPORT로 보냅니다.</p>
+
+<div class="card">
+  <textarea id="text" placeholder="지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
+  <button id="find">찾기</button>
+  <div id="cands" hidden></div>
+  <div class="status" id="status"></div>
+</div>
+
+<div class="card" id="out" hidden>
+  <h2 id="outTitle"></h2>
+  <div class="stat"><div><b id="dist">-</b><span>거리</span></div><div><b id="elev">-</b><span>획득고도</span></div><div><b id="time">-</b><span>예상시간</span></div></div>
+  <button id="share">가민 커넥트 / IGPSPORT로 보내기</button>
+  <button id="download" class="sub">GPX 파일 저장</button>
+</div>
+
+<div class="card">
+  <h2>사용 방법</h2>
+  <ol>
+    <li><b>붙여넣고 찾기</b> — 지도 앱에서 공유한 링크, 또는 상호·주소</li>
+    <li><b>장소를 고르고</b> 위치 권한을 허용하면 경로 완성</li>
+    <li><b>보내기</b> 버튼 → 공유창에서 가민 커넥트 또는 IGPSPORT 선택</li>
+  </ol>
+</div>
+
+<div class="card">
+  <details>
+    <summary>📲 홈 화면에 설치하기 (공유 메뉴에 등록)</summary>
+    <ol style="margin-top:10px">
+      <li><b>Android</b>: 크롬 메뉴(⋮) → 앱 설치</li>
+      <li>설치 후 구글맵·네이버지도·카카오맵의 <b>공유</b> 창에 <b>GPXTo</b>가 나타납니다</li>
+      <li>공유로 열면 자동으로 찾기가 실행됩니다</li>
+    </ol>
+  </details>
+</div>
+<p class="small">경로: BRouter · 지도 데이터: OpenStreetMap contributors</p>
+
+<script>
+const $ = id => document.getElementById(id);
+const say = (m, cls='') => { $('status').className = 'status ' + cls; $('status').textContent = m; };
+let dest = null, gpxFile = null, me = null;
+
+// 지도 앱 '공유'로 들어온 내용을 입력창에 채우고 바로 찾기
+const p = new URLSearchParams(location.search);
+const shared = [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join('\n');
+if (shared) { $('text').value = shared; find(); history.replaceState(null, '', '/'); }
+$('find').onclick = find;
+
+async function find() {
+  $('out').hidden = true; $('cands').hidden = true; dest = null;
+  const text = $('text').value.trim();
+  if (!text) return say('링크나 장소 이름을 입력해 주세요.', 'err');
+  $('find').disabled = true; say('장소 찾는 중…');
+  try {
+    me = null;
+    try { me = await getPosition(); } catch (e) { /* 위치 없이도 검색은 진행 */ }
+    const near = me ? '&lat=' + me.latitude + '&lon=' + me.longitude : '';
+    const r = await fetch('/api/find?text=' + encodeURIComponent(text) + near);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    renderCands(j.candidates);
+  } catch (e) { say(e.message, 'err'); }
+  $('find').disabled = false;
+}
+
+function renderCands(list) {
+  const box = $('cands'); box.innerHTML = ''; box.hidden = false;
+  list.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'cand'; b.innerHTML = '';
+    b.append(c.name); const s = document.createElement('small'); s.textContent = (c.km != null ? c.km + ' km · ' : '') + (c.addr || ''); b.append(s);
+    b.onclick = () => choose(c, b);
+    box.append(b);
+  });
+  say(list.length > 1 ? '목적지를 선택해 주세요.' : '목적지를 확인하고 눌러 주세요.');
+  if (list.length === 1) box.firstChild.click();
+}
+
+function getPosition() {
+  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(
+    q => res(q.coords), () => rej(new Error('현재 위치 권한을 허용해 주세요.')),
+    {enableHighAccuracy: true, timeout: 15000}));
+}
+
+async function choose(c, btn) {
+  document.querySelectorAll('.cand').forEach(x => x.classList.remove('on')); btn.classList.add('on');
+  dest = c; $('out').hidden = true;
+  try {
+    say('현재 위치 확인 중…');
+    if (!me) me = await getPosition();
+    say('경로 계산 중… (최대 1분)');
+    const q = new URLSearchParams({slat: me.latitude, slon: me.longitude, elat: c.lat, elon: c.lon, name: c.name});
+    const g = await fetch('/api/gpx?' + q);
+    if (!g.ok) throw new Error((await g.json()).error);
+    const text = await g.text();
+    gpxFile = new File([text], c.name.replace(/[^\w가-힣]+/g, '_') + '.gpx', {type: 'application/gpx+xml'});
+    showStats(text, c);
+    say('경로가 완성됐어요 ✅', 'ok');
+  } catch (e) { say(e.message, 'err'); }
+}
+
+function showStats(gpxText, c) {
+  const km = (/track-length = (\d+)/.exec(gpxText) || [])[1];
+  const up = (/filtered ascend = (\d+)/.exec(gpxText) || [])[1];
+  const t = (/time=([^ \n]+(?: \d+s)?)/.exec(gpxText) || [])[1];
+  $('outTitle').textContent = '📍 ' + c.name;
+  $('dist').textContent = km ? (km / 1000).toFixed(1) + ' km' : '-';
+  $('elev').textContent = up ? up + ' m' : '-';
+  $('time').textContent = t ? t.replace(/ \d+s$/, '') : '-';
+  $('out').hidden = false;
+}
+
+// 크롬은 .gpx 형식의 공유를 막는 경우가 있어, 막히면 저장 방식으로 자동 전환합니다.
+$('share').onclick = async () => {
+  const variants = [gpxFile, new File([gpxFile], gpxFile.name, {type: 'text/plain'})];
+  for (const f of variants) {
+    try {
+      if (navigator.canShare && navigator.canShare({files: [f]})) {
+        await navigator.share({files: [f], title: f.name});
+        return;
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return;   // 사용자가 공유창을 닫음
+    }
+  }
+  download();
+};
+$('download').onclick = download;
+function download() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name;
+  document.body.append(a); a.click(); a.remove();
+  say('저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
+}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+</body>
+</html>
