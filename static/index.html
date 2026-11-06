@@ -41,6 +41,13 @@
   ol{margin:0;padding-left:20px;color:var(--sub);font-size:14px} li{margin:5px 0} li b{color:var(--txt)}
   details summary{cursor:pointer;color:var(--sub);font-size:14px}
   .small{color:var(--sub);font-size:12px;text-align:center;margin-top:20px}
+  #mapOv{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;flex-direction:column}
+  #mapOv .top{display:flex;gap:10px;align-items:center;padding:12px 14px;padding-top:max(12px,env(safe-area-inset-top))}
+  #mapOv .top b{flex:1} #mapOv .top button{width:auto;margin:0;padding:9px 16px;font-size:14px}
+  #map{flex:1;min-height:0}
+  #mapOv .bot{padding:12px 14px;padding-bottom:max(12px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+  #mapOv input{width:100%;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:15px}
+  #mapHelp{font-size:13px;color:var(--sub);margin:8px 0 0}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -58,6 +65,7 @@
   <div id="sBox" hidden>
     <textarea id="sText" placeholder="출발지: 지도 링크, 상호, 주소&#10;예) Nimman Road, Chiang Mai"></textarea>
     <button id="sFind">출발지 찾기</button>
+    <button id="sPin" class="sub">🗺️ 지도에서 직접 찍기</button>
     <div id="sCands"></div>
   </div>
   <div class="picked" id="sPicked">📍 현재 위치에서 출발합니다 (경로 만들 때 확인)</div>
@@ -69,6 +77,7 @@
   <h2>🔴 목적지</h2>
   <textarea id="dText" placeholder="목적지: 지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
   <button id="dFind">목적지 찾기</button>
+  <button id="dPin" class="sub">🗺️ 지도에서 직접 찍기</button>
   <div id="dCands"></div>
   <div class="picked" id="dPicked" hidden></div>
   <div class="status" id="dStatus"></div>
@@ -109,6 +118,17 @@
   </details>
 </div>
 <p class="small">경로: BRouter · 지도 데이터: OpenStreetMap contributors</p>
+
+<div id="mapOv" hidden>
+  <div class="top"><b id="mapTitle">지도에서 위치 찍기</b><button id="mapClose" class="sub">닫기</button></div>
+  <div id="map"></div>
+  <div class="bot">
+    <input id="mapName" placeholder="장소 이름 (선택, 파일 이름에 사용)">
+    <div id="mapHelp">지도를 눌러 핀을 놓으세요. 핀은 끌어서 옮길 수 있어요.</div>
+    <button id="mapOk" disabled>이 위치로 선택</button>
+    <button id="mapMe" class="sub">내 위치로 이동</button>
+  </div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -155,15 +175,19 @@ async function find(k) {   // k: 's' | 'd'
     const r = await fetch('/api/find?text=' + encodeURIComponent(text) + near);
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
+    if (!j.candidates.length) {
+      say(st, j.message || '장소를 찾지 못했어요. 지도에서 직접 찍어 주세요.', 'err');
+      openMap(k, j.hint, j.name);
+    }
     j.candidates.forEach(c => {
       const b = document.createElement('button');
       b.className = 'cand'; b.append(c.name);
       const s = document.createElement('small');
-      s.textContent = (c.km != null ? c.km + ' km · ' : '') + (c.addr || ''); b.append(s);
+      s.textContent = (c.km != null && c.km <= 300 ? c.km + ' km · ' : '') + (c.addr || ''); b.append(s);
       b.onclick = () => choose(k, c, b);
       box.append(b);
     });
-    say(st, j.candidates.length > 1 ? '장소를 선택해 주세요.' : '');
+    if (j.candidates.length) say(st, j.candidates.length > 1 ? '장소를 선택해 주세요.' : '');
     if (j.candidates.length === 1) box.firstChild.click();
   } catch (e) { say(st, e.message, 'err'); }
   $(k + 'Find').disabled = false;
@@ -171,11 +195,70 @@ async function find(k) {   // k: 's' | 'd'
 
 function choose(k, c, btn) {
   document.querySelectorAll('#' + k + 'Cands .cand').forEach(x => x.classList.remove('on'));
-  btn.classList.add('on');
+  if (btn) btn.classList.add('on');
   picked[k] = c; say(k + 'Status', '');
   const el = $(k + 'Picked'); el.hidden = false; el.textContent = '✅ ' + c.name;
   refresh();
 }
+// ---------- 지도에서 직접 찍기 ----------
+let map = null, pin = null, hintCircle = null, mapFor = null, pinPos = null;
+// 지도 라이브러리는 지도를 열 때 불러온다: 사이트 안의 파일 -> 없으면 인터넷(CDN)
+let leafletReady = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  if (leafletReady) return leafletReady;
+  const tryOne = (base) => new Promise((res, rej) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + 'leaflet.css';
+    const js = document.createElement('script'); js.src = base + 'leaflet.js';
+    js.onload = () => { L.Icon.Default.prototype.options.imagePath = base + 'images/'; res(); };
+    js.onerror = () => { css.remove(); js.remove(); rej(); };
+    document.head.append(css, js);
+  });
+  leafletReady = tryOne('/static/vendor/')
+    .catch(() => tryOne('https://unpkg.com/leaflet@1.9.4/dist/'))
+    .catch(() => { leafletReady = null; throw new Error('지도를 불러오지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.'); });
+  return leafletReady;
+}
+function setPin(latlng) {
+  pinPos = latlng;
+  if (!pin) {
+    pin = L.marker(latlng, {draggable: true}).addTo(map);
+    pin.on('dragend', () => { pinPos = pin.getLatLng(); });
+  } else pin.setLatLng(latlng);
+  $('mapOk').disabled = false;
+}
+async function openMap(k, hint, name) {
+  try { await loadLeaflet(); }
+  catch (e) { say(k + 'Status', e.message, 'err'); return; }
+  mapFor = k; $('mapOv').hidden = false; $('mapName').value = name || '';
+  $('mapTitle').textContent = k === 's' ? '출발지 위치 찍기' : '목적지 위치 찍기';
+  const center = hint ? [hint.lat, hint.lon] : (me ? [me.latitude, me.longitude] : [37.5665, 126.978]);
+  if (!map) {
+    map = L.map('map', {zoomControl: true}).setView(center, hint ? 13 : 12);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {maxZoom: 19, attribution: '© OpenStreetMap contributors'}).addTo(map);
+    map.on('click', e => setPin(e.latlng));
+  } else map.setView(center, hint ? 13 : map.getZoom());
+  setTimeout(() => map.invalidateSize(), 50);
+  if (pin) { map.removeLayer(pin); pin = null; } pinPos = null; $('mapOk').disabled = true;
+  if (hintCircle) { map.removeLayer(hintCircle); hintCircle = null; }
+  if (hint) hintCircle = L.circle(center, {radius: 3500, color: '#2dd4a0', weight: 1, fillOpacity: 0.08}).addTo(map);
+  $('mapHelp').textContent = hint ? '초록 원 근처에 있어요. 지도를 확대해서 정확한 위치를 눌러 주세요.'
+                                  : '지도를 눌러 핀을 놓으세요. 핀은 끌어서 옮길 수 있어요.';
+}
+$('mapClose').onclick = () => { $('mapOv').hidden = true; };
+$('mapMe').onclick = async () => {
+  try { const p = await getPosition(true); map.setView([p.latitude, p.longitude], 15); } catch (e) { $('mapHelp').textContent = e.message; }
+};
+$('mapOk').onclick = () => {
+  if (!pinPos) return;
+  const name = $('mapName').value.trim() || 'Pinned location';
+  choose(mapFor, {name, lat: pinPos.lat, lon: pinPos.lng, addr: 'Pinned on map'}, null);
+  $('mapOv').hidden = true;
+};
+$('sPin').onclick = () => openMap('s');
+$('dPin').onclick = () => openMap('d');
+
 $('sFind').onclick = () => find('s');
 $('dFind').onclick = () => find('d');
 
@@ -244,18 +327,16 @@ function showRoads(h) {
 }
 
 // ---------- 보내기 / 저장 ----------
-// 크롬은 .gpx 형식의 공유를 막는 경우가 있어, 막히면 저장 방식으로 자동 전환합니다.
+// 안드로이드 크롬은 웹에서 공유창으로 넘길 수 있는 파일 종류에 .gpx가 없어 보통 막힌다.
+// 공유를 한 번 시도하고, 막히면 바로 저장 + 여는 방법 안내로 넘어간다.
 $('share').onclick = async () => {
-  const variants = [gpxFile, new File([gpxFile], gpxFile.name, {type: 'text/plain'})];
-  for (const f of variants) {
-    try {
-      if (navigator.canShare && navigator.canShare({files: [f]})) {
-        await navigator.share({files: [f], title: f.name});
-        return;
-      }
-    } catch (e) {
-      if (e.name === 'AbortError') return;
+  try {
+    if (navigator.canShare && navigator.canShare({files: [gpxFile]})) {
+      await navigator.share({files: [gpxFile], title: gpxFile.name});
+      return;
     }
+  } catch (e) {
+    if (e.name === 'AbortError') return;   // 사용자가 공유창을 닫음
   }
   download();
 };
@@ -264,7 +345,7 @@ function download() {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name;
   document.body.append(a); a.click(); a.remove();
-  say('bStatus', '저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
+  say('bStatus', '저장했어요 📥 화면 아래 다운로드 알림의 "열기"를 누르고 가민 커넥트 / IGPSPORT를 고르세요. 알림이 사라졌으면 "다운로드" 폴더에서 .gpx 파일을 누르면 됩니다.', 'ok');
 }
 
 // ---------- 지도 앱 '공유'로 들어온 내용 → 목적지에 채우고 바로 찾기 ----------
