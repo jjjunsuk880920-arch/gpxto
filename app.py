@@ -182,6 +182,62 @@ def split_address_shop(s: str):
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
+PLUS_RE = re.compile(r"\b([23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3})\b", re.I)
+# 위도,경도 (예: 18.807, 98.963 / 18.807,98.963)
+LATLON_RE = re.compile(r"(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")
+
+
+COUNTRY_CODES = {"태국": "th", "thailand": "th", "대한민국": "kr", "한국": "kr", "south korea": "kr", "korea": "kr",
+                 "일본": "jp", "japan": "jp", "베트남": "vn", "vietnam": "vn", "대만": "tw", "taiwan": "tw",
+                 "라오스": "la", "laos": "la", "말레이시아": "my", "malaysia": "my", "싱가포르": "sg", "singapore": "sg"}
+
+
+def _nominatim_one(q, cc=None):
+    params = {"q": q, "format": "jsonv2", "limit": 1}
+    if cc:
+        params["countrycodes"] = cc
+    try:
+        r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=UA, timeout=20)
+        j = r.json() if r.status_code == 200 else []
+        return (float(j[0]["lat"]), float(j[0]["lon"])) if j else None
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
+def locality_anchor(text: str):
+    """'태국 치앙마이 창프악' / 'Chang Phueak, Chiang Mai, Thailand' -> 기준 좌표.
+    나라 이름이 있으면 그 나라 안에서만 찾고, 긴 것부터 줄여가며 시도."""
+    low = text.lower()
+    cc = next((c for w, c in COUNTRY_CODES.items() if w in low), None)
+    parts = [p for p in re.split(r"[,\s]+", text.strip()) if p and p.lower() not in COUNTRY_CODES]
+    for n in range(len(parts), 0, -1):
+        for q in dict.fromkeys((" ".join(parts[:n]), " ".join(parts[-n:]))):
+            a = _nominatim_one(q, cc)
+            if a:
+                return a
+    return None
+
+
+def parse_plus_code(text: str, near=None):
+    """구글맵 정보란의 플러스 코드 -> (lat, lon, 남은 지역 문자열). 없으면 None."""
+    m = PLUS_RE.search(text or "")
+    if not m:
+        return None
+    from openlocationcode import openlocationcode as olc
+    code = m.group(1).upper()
+    if not olc.isValid(code):
+        return None
+    rest = (text[:m.start()] + " " + text[m.end():]).strip(" ,\n")
+    if olc.isShort(code):
+        ref = locality_anchor(rest) if rest else None
+        ref = ref or near
+        if not ref:
+            raise ValueError("짧은 플러스 코드는 지역 이름이 같이 있어야 해요. 예) RX47+R6 Chiang Mai")
+        code = olc.recoverNearest(code, ref[0], ref[1])
+    c = olc.decode(code).latlng()
+    return c[0], c[1], rest
+
+
 def find_candidates(text: str, near=None):
     """붙여넣은 내용(구글/네이버/카카오 링크, 상호, 주소, 좌표) -> 후보 장소 목록.
     정확한 위치를 못 찾으면 NeedPin 예외(지도에서 직접 찍도록 안내)."""
@@ -202,10 +258,19 @@ def find_candidates(text: str, near=None):
             seen.add(k)
             cands.append(c)
 
-    # 좌표 직접 입력
-    m = re.fullmatch(r"(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", text)
-    if m:
-        add({"name": "Pinned location", "addr": text, "lat": float(m.group(1)), "lon": float(m.group(2))})
+    # 좌표 직접 입력 (링크가 아닌 글 안 어디에 있어도)
+    m = None if url else LATLON_RE.search(text)
+    if m and abs(float(m.group(1))) <= 90 and abs(float(m.group(2))) <= 180:
+        rest = LATLON_RE.sub("", text).strip(" ,\n")
+        add({"name": rest.splitlines()[0][:40] if rest else "Pinned location", "addr": m.group(0),
+             "lat": float(m.group(1)), "lon": float(m.group(2))})
+        return cands
+
+    # 플러스 코드 (구글맵 정보란의 'RX47+R6 Chiang Mai' 같은 코드) -> 정확한 위치
+    pc = None if url else parse_plus_code(text, near)
+    if pc:
+        add({"name": "Plus code " + PLUS_RE.search(text).group(1).upper(), "addr": pc[2][:60] or "Plus code",
+             "lat": pc[0], "lon": pc[1]})
         return cands
 
     title, anchor, within, pname = "", None, None, None
@@ -254,8 +319,8 @@ def find_candidates(text: str, near=None):
     if not cands:
         name = pname or (lines[0] if lines else None)
         hint = {"lat": anchor[0], "lon": anchor[1]} if anchor else None
-        msg = ("이 장소는 지도 데이터에서 찾지 못했어요. 지도에서 직접 위치를 찍어 주세요." if name
-               else "장소를 찾지 못했습니다. 지도에서 직접 찍거나 다른 이름으로 시도해 보세요.")
+        msg = ("이 장소는 지도 데이터에서 찾지 못했어요. 구글맵 정보란의 플러스 코드(예: RX47+R6 Chiang Mai)를 "
+               "붙여넣거나, 지도에서 직접 위치를 찍어 주세요.")
         raise NeedPin(msg, hint, name)
     return cands[:5]
 

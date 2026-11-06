@@ -2,3 +2,4 @@ flask>=3.0
 requests>=2.31
 gunicorn>=22.0
 s2sphere>=0.2.5
+openlocationcode>=1.0
