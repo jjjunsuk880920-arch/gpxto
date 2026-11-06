@@ -48,6 +48,12 @@
   #mapOv .bot{padding:12px 14px;padding-bottom:max(12px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
   #mapOv input{width:100%;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:15px}
   #mapHelp{font-size:13px;color:var(--sub);margin:8px 0 0}
+  #pmap{height:260px;border-radius:10px;margin-top:10px;background:#0e141b}
+  .opt{display:block;width:100%;text-align:left;background:#0e141b;border:2px solid var(--line);color:var(--txt);
+       padding:12px;margin-top:8px;border-radius:10px;font-size:15px;font-weight:600}
+  .opt.on{border-color:var(--c)} .opt i{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--c);margin-right:7px}
+  .opt .m{display:block;font-weight:400;color:var(--sub);font-size:13px;margin-top:3px}
+  .opt .w{display:block;font-weight:400;color:var(--err);font-size:13px;margin-top:2px}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -88,6 +94,12 @@
   <div class="route" id="summary">출발지와 목적지를 정해 주세요.</div>
   <button id="build" disabled>경로 만들기</button>
   <div class="status" id="bStatus"></div>
+</div>
+
+<div class="card" id="opts" hidden>
+  <h2>🧭 경로 고르기 <small>지도와 목록에서 비교</small></h2>
+  <div id="pmap"></div>
+  <div id="optList"></div>
 </div>
 
 <div class="card" id="out" hidden>
@@ -266,7 +278,7 @@ $('dFind').onclick = () => find('d');
 function startLabel() { return startMode === 'me' ? '현재 위치' : (picked.s ? picked.s.name : null); }
 function refresh() {
   const s = startLabel(), d = picked.d ? picked.d.name : null;
-  $('out').hidden = true; say('bStatus', '');
+  $('out').hidden = true; $('opts').hidden = true; say('bStatus', '');
   $('summary').innerHTML = (s || d)
     ? '<b>출발</b> ' + esc(s || '미정') + '<br><b>도착</b> ' + esc(d || '미정')
     : '출발지와 목적지를 정해 주세요.';
@@ -274,9 +286,12 @@ function refresh() {
 }
 const esc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// ---------- 경로 만들기 ----------
+// ---------- 경로 만들기: 선택지 여러 개 계산 → 지도에서 비교 → 고르기 ----------
+const COLORS = ['#2dd4a0', '#ffb020', '#5aa9ff'];
+let routeOpts = [], routeTitle = '', routeFile = 'route.gpx', pmap = null, plines = [];
+
 $('build').onclick = async () => {
-  $('build').disabled = true;
+  $('build').disabled = true; $('opts').hidden = true; $('out').hidden = true;
   try {
     let s;
     if (startMode === 'me') {
@@ -285,41 +300,80 @@ $('build').onclick = async () => {
       s = {name: '현재 위치', lat: p.latitude, lon: p.longitude};
     } else s = picked.s;
     const d = picked.d;
-    say('bStatus', '경로 계산 중… (최대 1분)');
-    const title = s.name + ' → ' + d.name;
-    const q = new URLSearchParams({slat: s.lat, slon: s.lon, elat: d.lat, elon: d.lon, name: title});
-    const g = await fetch('/api/gpx?' + q);
-    if (!g.ok) throw new Error((await g.json()).error);
-    const text = await g.text();
-    gpxFile = new File([text], (d.name).replace(/[^\w가-힣]+/g, '_').slice(0, 40) + '.gpx', {type: 'application/gpx+xml'});
-    showStats(text, title);
-    showRoads(g.headers.get('X-Road-Summary'));
-    say('bStatus', '경로가 완성됐어요 ✅', 'ok');
+    say('bStatus', '경로 후보 계산 중… (최대 1분)');
+    routeTitle = s.name + ' → ' + d.name;
+    const q = new URLSearchParams({slat: s.lat, slon: s.lon, elat: d.lat, elon: d.lon, name: routeTitle});
+    const r = await fetch('/api/routes?' + q);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    routeOpts = j.options;
+    routeFile = d.name.replace(/[^\w가-힣]+/g, '_').slice(0, 40) + '.gpx';
+    say('bStatus', routeOpts.length > 1 ? '경로 ' + routeOpts.length + '개를 찾았어요. 아래에서 골라 주세요.' : '경로를 찾았어요 ✅', 'ok');
+    await showOptions();
   } catch (e) { say('bStatus', e.message, 'err'); }
   $('build').disabled = false;
 };
 
-function showStats(gpxText, title) {
-  const km = (/track-length = (\d+)/.exec(gpxText) || [])[1];
-  const up = (/filtered ascend = (\d+)/.exec(gpxText) || [])[1];
-  const t = (/time=((?:\d+h )?(?:\d+m )?(?:\d+s)?)/.exec(gpxText) || [])[1];
-  $('outTitle').textContent = '📍 ' + title;
-  $('dist').textContent = km ? (km / 1000).toFixed(1) + ' km' : '-';
-  $('elev').textContent = up ? up + ' m' : '-';
-  $('time').textContent = t ? t.replace(/ \d+s$/, '') : '-';
+function fmtT(t) { return (t || '').replace(/ \d+s$/, '') || '-'; }
+
+async function showOptions() {
+  const list = $('optList'); list.innerHTML = '';
+  $('opts').hidden = false;
+  routeOpts.forEach((o, i) => {
+    const b = document.createElement('button');
+    b.className = 'opt'; b.style.setProperty('--c', COLORS[i % 3]);
+    const r = o.roads || {};
+    b.innerHTML = '<i></i>' + esc(o.label)
+      + '<span class="m">' + o.km + ' km · ↑' + o.ascent + ' m · ' + fmtT(o.time) + '</span>'
+      + '<span class="m">🚲 자전거도로 ' + (r.bike ?? '-') + ' km · 🛣️ 국도·간선 ' + (r.main ?? '-') + ' km</span>'
+      + (o.warnings || []).map(w => '<span class="w">⚠️ ' + esc(w) + '</span>').join('');
+    b.onclick = () => selectOpt(i);
+    list.append(b);
+  });
+  // 지도 미리보기 (지도를 못 불러와도 목록으로 고를 수 있음)
+  try {
+    await loadLeaflet();
+    if (!pmap) {
+      pmap = L.map('pmap', {zoomControl: true});
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        {maxZoom: 19, attribution: '© OpenStreetMap contributors'}).addTo(pmap);
+    }
+    plines.forEach(l => pmap.removeLayer(l)); plines = [];
+    const bounds = L.latLngBounds(routeOpts.flatMap(o => o.line));
+    pmap.fitBounds(bounds, {padding: [20, 20]});          // 선을 그리기 전에 지도 위치부터 잡는다
+    routeOpts.forEach((o, i) => {
+      const l = L.polyline(o.line, {color: COLORS[i % 3], weight: 4, opacity: .55}).addTo(pmap);
+      l.on('click', () => selectOpt(i));
+      plines.push(l);
+    });
+    setTimeout(() => { pmap.invalidateSize(); pmap.fitBounds(bounds, {padding: [20, 20]}); }, 50);
+  } catch (e) { $('pmap').hidden = true; }
+  selectOpt(0);
+}
+
+function selectOpt(i) {
+  const o = routeOpts[i];
+  document.querySelectorAll('#optList .opt').forEach((b, k) => b.classList.toggle('on', k === i));
+  plines.forEach((l, k) => {
+    try { l.setStyle({weight: k === i ? 7 : 4, opacity: k === i ? 1 : .45}); if (k === i) l.bringToFront(); } catch (e) {}
+  });
+  gpxFile = new File([o.gpx], routeFile, {type: 'application/gpx+xml'});
+  $('outTitle').textContent = '📍 ' + routeTitle + ' · ' + o.label;
+  $('dist').textContent = o.km + ' km';
+  $('elev').textContent = o.ascent + ' m';
+  $('time').textContent = fmtT(o.time);
+  showRoads({roads: o.roads, warnings: o.warnings});
   $('out').hidden = false;
 }
 
-function showRoads(h) {
+function showRoads(j) {
   const box = $('roads'); box.innerHTML = '';
-  let j = null;
-  try { j = JSON.parse(decodeURIComponent(h || '')); } catch (e) {}
   if (!j) return;
   const r = j.roads;
   if (r) {
     const bad = r.forbidden > 0;
-    box.innerHTML = '🛣️ 국도·간선 <b>' + r.main + '</b> km · 지방도·소로 <b>' + r.local + '</b> km'
-      + (r.offroad ? ' · 자전거길·보행로 <b>' + r.offroad + '</b> km' : '')
+    box.innerHTML = '🚲 자전거도로 <b>' + r.bike + '</b> km · 🛣️ 국도·간선 <b>' + r.main + '</b> km · 지방도·소로 <b>' + r.local + '</b> km'
+      + (r.offroad ? ' · 보행로 <b>' + r.offroad + '</b> km' : '')
       + '<br>' + (bad ? '<span class="warn">🚫 자동차전용도로 ' + r.forbidden + ' km</span>'
                       : '<span class="good">✅ 자동차전용도로 구간 없음</span>');
   }
