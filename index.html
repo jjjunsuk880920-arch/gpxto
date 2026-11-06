@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<script src="/static/vendor/leaflet.js"></script>
+<link rel="icon" href="/static/icon-192.png">
+<title>GPXTo – 자전거 경로 만들어 보내기</title>
+<style>
+  :root{--bg:#0b0f14;--card:#141b23;--line:#243040;--txt:#e8eef4;--sub:#8fa1b3;--acc:#2dd4a0;--accd:#0b3d2f;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;
+       padding:max(20px,env(safe-area-inset-top)) 18px 40px;max-width:560px;margin-inline:auto;line-height:1.55}
+  h1{font-size:26px;margin:8px 0 4px;letter-spacing:-.5px} h1 span{color:var(--acc)}
+  .lead{color:var(--sub);font-size:14px;margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  h2{font-size:15px;margin:0 0 10px;display:flex;justify-content:space-between;align-items:center}
+  h2 small{font-weight:400;color:var(--sub);font-size:12px}
+  textarea{width:100%;height:76px;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;
+           padding:12px;font-size:15px;resize:vertical;font-family:inherit}
+  textarea:focus{outline:2px solid var(--acc);border-color:transparent}
+  button{width:100%;padding:14px;margin-top:10px;font-size:16px;font-weight:600;border:0;border-radius:10px;
+         background:var(--acc);color:#04201a;cursor:pointer}
+  button.sub{background:#1d2834;color:var(--txt)} button:disabled{opacity:.45;cursor:default}
+  .seg{display:flex;gap:8px} .seg button{margin:0;padding:11px;font-size:15px;background:#1d2834;color:var(--txt)}
+  .seg button.on{background:var(--acc);color:#04201a}
+  .cand{display:block;width:100%;text-align:left;background:#0e141b;border:1px solid var(--line);color:var(--txt);
+        font-weight:500;padding:12px;margin-top:8px;border-radius:10px;font-size:15px}
+  .cand small{display:block;color:var(--sub);font-weight:400;margin-top:2px}
+  .cand.on{border-color:var(--acc);background:var(--accd)}
+  .picked{margin-top:10px;font-size:14px;color:var(--acc)}
+  .status{font-size:14px;color:var(--sub);min-height:20px;margin-top:10px} .err{color:var(--err)} .ok{color:var(--acc)}
+  .stat{display:flex;gap:10px;margin-top:12px} .stat div{flex:1;background:#0e141b;border-radius:10px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:20px;color:var(--acc)} .stat span{font-size:12px;color:var(--sub)}
+  .roads{margin-top:12px;font-size:14px;line-height:1.7;color:var(--sub)} .roads b{color:var(--txt)}
+  .roads .warn{color:var(--err)} .roads .good{color:var(--acc)}
+  .route{font-size:15px;line-height:1.7} .route b{color:var(--acc)}
+  ol{margin:0;padding-left:20px;color:var(--sub);font-size:14px} li{margin:5px 0} li b{color:var(--txt)}
+  details summary{cursor:pointer;color:var(--sub);font-size:14px}
+  .small{color:var(--sub);font-size:12px;text-align:center;margin-top:20px}
+  #mapOv{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;flex-direction:column}
+  #mapOv .top{display:flex;gap:10px;align-items:center;padding:12px 14px;padding-top:max(12px,env(safe-area-inset-top))}
+  #mapOv .top b{flex:1} #mapOv .top button{width:auto;margin:0;padding:9px 16px;font-size:14px}
+  #map{flex:1;min-height:0}
+  #mapOv .bot{padding:12px 14px;padding-bottom:max(12px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+  #mapOv input{width:100%;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:15px}
+  #mapHelp{font-size:13px;color:var(--sub);margin:8px 0 0}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<h1>GPX<span>To</span> 🚴</h1>
+<p class="lead">출발지와 목적지를 정하면 도로 자전거 경로를 만들어 가민 커넥트 / IGPSPORT로 보냅니다. 지도 링크, 상호, 주소를 붙여넣거나 검색하세요.</p>
+
+<!-- 출발지 -->
+<div class="card">
+  <h2>🟢 출발지</h2>
+  <div class="seg">
+    <button id="sMe" class="on">현재 위치</button>
+    <button id="sCustom">직접 지정</button>
+  </div>
+  <div id="sBox" hidden>
+    <textarea id="sText" placeholder="출발지: 지도 링크, 상호, 주소&#10;예) Nimman Road, Chiang Mai"></textarea>
+    <button id="sFind">출발지 찾기</button>
+    <button id="sPin" class="sub">🗺️ 지도에서 직접 찍기</button>
+    <div id="sCands"></div>
+  </div>
+  <div class="picked" id="sPicked">📍 현재 위치에서 출발합니다 (경로 만들 때 확인)</div>
+  <div class="status" id="sStatus"></div>
+</div>
+
+<!-- 목적지 -->
+<div class="card">
+  <h2>🔴 목적지</h2>
+  <textarea id="dText" placeholder="목적지: 지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
+  <button id="dFind">목적지 찾기</button>
+  <button id="dPin" class="sub">🗺️ 지도에서 직접 찍기</button>
+  <div id="dCands"></div>
+  <div class="picked" id="dPicked" hidden></div>
+  <div class="status" id="dStatus"></div>
+</div>
+
+<!-- 경로 만들기 -->
+<div class="card">
+  <div class="route" id="summary">출발지와 목적지를 정해 주세요.</div>
+  <button id="build" disabled>경로 만들기</button>
+  <div class="status" id="bStatus"></div>
+</div>
+
+<div class="card" id="out" hidden>
+  <h2 id="outTitle"></h2>
+  <div class="stat"><div><b id="dist">-</b><span>거리</span></div><div><b id="elev">-</b><span>획득고도</span></div><div><b id="time">-</b><span>예상시간</span></div></div>
+  <div class="roads" id="roads"></div>
+  <button id="share">가민 커넥트 / IGPSPORT로 보내기</button>
+  <button id="download" class="sub">GPX 파일 저장</button>
+</div>
+
+<div class="card">
+  <h2>사용 방법</h2>
+  <ol>
+    <li><b>출발지</b>: 현재 위치 그대로, 또는 직접 지정</li>
+    <li><b>목적지</b>: 링크·상호·주소를 붙여넣고 찾아서 고르기</li>
+    <li><b>경로 만들기</b> → <b>보내기</b>로 가민 커넥트 / IGPSPORT 선택</li>
+  </ol>
+</div>
+
+<div class="card">
+  <details>
+    <summary>📲 홈 화면에 설치하기 (공유 메뉴에 등록)</summary>
+    <ol style="margin-top:10px">
+      <li><b>Android</b>: 크롬 메뉴(⋮) → 앱 설치</li>
+      <li>설치 후 구글맵·네이버지도·카카오맵의 <b>공유</b> 창에 <b>GPXTo</b>가 나타납니다</li>
+      <li>공유로 열면 목적지가 자동으로 채워져 찾기가 실행됩니다</li>
+    </ol>
+  </details>
+</div>
+<p class="small">경로: BRouter · 지도 데이터: OpenStreetMap contributors</p>
+
+<div id="mapOv" hidden>
+  <div class="top"><b id="mapTitle">지도에서 위치 찍기</b><button id="mapClose" class="sub">닫기</button></div>
+  <div id="map"></div>
+  <div class="bot">
+    <input id="mapName" placeholder="장소 이름 (선택, 파일 이름에 사용)">
+    <div id="mapHelp">지도를 눌러 핀을 놓으세요. 핀은 끌어서 옮길 수 있어요.</div>
+    <button id="mapOk" disabled>이 위치로 선택</button>
+    <button id="mapMe" class="sub">내 위치로 이동</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const say = (id, m, cls = '') => { const e = $(id); e.className = 'status ' + cls; e.textContent = m; };
+
+let startMode = 'me';            // 'me' | 'custom'
+let picked = {s: null, d: null}; // 선택된 장소 {name, lat, lon}
+let me = null;                   // 현재 위치 캐시
+let gpxFile = null;
+
+function getPosition(force) {
+  if (me && !force) return Promise.resolve(me);
+  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(
+    q => { me = q.coords; res(me); },
+    () => rej(new Error('현재 위치 권한을 허용해 주세요.')),
+    {enableHighAccuracy: true, timeout: 15000}));
+}
+
+// ---------- 출발지 모드 ----------
+function setMode(m) {
+  startMode = m;
+  $('sMe').classList.toggle('on', m === 'me');
+  $('sCustom').classList.toggle('on', m === 'custom');
+  $('sBox').hidden = (m === 'me');
+  $('sPicked').textContent = m === 'me' ? '📍 현재 위치에서 출발합니다 (경로 만들 때 확인)'
+    : (picked.s ? '✅ ' + picked.s.name : '출발지를 검색해서 골라 주세요.');
+  refresh();
+}
+$('sMe').onclick = () => setMode('me');
+$('sCustom').onclick = () => setMode('custom');
+
+// ---------- 장소 찾기(출발/목적 공용) ----------
+async function find(k) {   // k: 's' | 'd'
+  const text = $(k + 'Text').value.trim();
+  const st = k + 'Status', box = $(k + 'Cands');
+  box.innerHTML = ''; picked[k] = null;
+  if (k === 'd') $('dPicked').hidden = true;
+  refresh();
+  if (!text) return say(st, '링크나 장소 이름을 입력해 주세요.', 'err');
+  $(k + 'Find').disabled = true; say(st, '장소 찾는 중…');
+  try {
+    let near = '';
+    try { const p = await getPosition(); near = '&lat=' + p.latitude + '&lon=' + p.longitude; } catch (e) {}
+    const r = await fetch('/api/find?text=' + encodeURIComponent(text) + near);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    if (!j.candidates.length) {
+      say(st, j.message || '장소를 찾지 못했어요. 지도에서 직접 찍어 주세요.', 'err');
+      openMap(k, j.hint, j.name);
+    }
+    j.candidates.forEach(c => {
+      const b = document.createElement('button');
+      b.className = 'cand'; b.append(c.name);
+      const s = document.createElement('small');
+      s.textContent = (c.km != null && c.km <= 300 ? c.km + ' km · ' : '') + (c.addr || ''); b.append(s);
+      b.onclick = () => choose(k, c, b);
+      box.append(b);
+    });
+    if (j.candidates.length) say(st, j.candidates.length > 1 ? '장소를 선택해 주세요.' : '');
+    if (j.candidates.length === 1) box.firstChild.click();
+  } catch (e) { say(st, e.message, 'err'); }
+  $(k + 'Find').disabled = false;
+}
+
+function choose(k, c, btn) {
+  document.querySelectorAll('#' + k + 'Cands .cand').forEach(x => x.classList.remove('on'));
+  if (btn) btn.classList.add('on');
+  picked[k] = c; say(k + 'Status', '');
+  const el = $(k + 'Picked'); el.hidden = false; el.textContent = '✅ ' + c.name;
+  refresh();
+}
+// ---------- 지도에서 직접 찍기 ----------
+let map = null, pin = null, hintCircle = null, mapFor = null, pinPos = null;
+L.Icon.Default.prototype.options.imagePath = '/static/vendor/images/';
+function setPin(latlng) {
+  pinPos = latlng;
+  if (!pin) {
+    pin = L.marker(latlng, {draggable: true}).addTo(map);
+    pin.on('dragend', () => { pinPos = pin.getLatLng(); });
+  } else pin.setLatLng(latlng);
+  $('mapOk').disabled = false;
+}
+function openMap(k, hint, name) {
+  mapFor = k; $('mapOv').hidden = false; $('mapName').value = name || '';
+  $('mapTitle').textContent = k === 's' ? '출발지 위치 찍기' : '목적지 위치 찍기';
+  const center = hint ? [hint.lat, hint.lon] : (me ? [me.latitude, me.longitude] : [37.5665, 126.978]);
+  if (!map) {
+    map = L.map('map', {zoomControl: true}).setView(center, hint ? 13 : 12);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {maxZoom: 19, attribution: '© OpenStreetMap contributors'}).addTo(map);
+    map.on('click', e => setPin(e.latlng));
+  } else map.setView(center, hint ? 13 : map.getZoom());
+  setTimeout(() => map.invalidateSize(), 50);
+  if (pin) { map.removeLayer(pin); pin = null; } pinPos = null; $('mapOk').disabled = true;
+  if (hintCircle) { map.removeLayer(hintCircle); hintCircle = null; }
+  if (hint) hintCircle = L.circle(center, {radius: 3500, color: '#2dd4a0', weight: 1, fillOpacity: 0.08}).addTo(map);
+  $('mapHelp').textContent = hint ? '초록 원 근처에 있어요. 지도를 확대해서 정확한 위치를 눌러 주세요.'
+                                  : '지도를 눌러 핀을 놓으세요. 핀은 끌어서 옮길 수 있어요.';
+}
+$('mapClose').onclick = () => { $('mapOv').hidden = true; };
+$('mapMe').onclick = async () => {
+  try { const p = await getPosition(true); map.setView([p.latitude, p.longitude], 15); } catch (e) { $('mapHelp').textContent = e.message; }
+};
+$('mapOk').onclick = () => {
+  if (!pinPos) return;
+  const name = $('mapName').value.trim() || 'Pinned location';
+  choose(mapFor, {name, lat: pinPos.lat, lon: pinPos.lng, addr: 'Pinned on map'}, null);
+  $('mapOv').hidden = true;
+};
+$('sPin').onclick = () => openMap('s');
+$('dPin').onclick = () => openMap('d');
+
+$('sFind').onclick = () => find('s');
+$('dFind').onclick = () => find('d');
+
+// ---------- 요약 / 버튼 상태 ----------
+function startLabel() { return startMode === 'me' ? '현재 위치' : (picked.s ? picked.s.name : null); }
+function refresh() {
+  const s = startLabel(), d = picked.d ? picked.d.name : null;
+  $('out').hidden = true; say('bStatus', '');
+  $('summary').innerHTML = (s || d)
+    ? '<b>출발</b> ' + esc(s || '미정') + '<br><b>도착</b> ' + esc(d || '미정')
+    : '출발지와 목적지를 정해 주세요.';
+  $('build').disabled = !(s && d);
+}
+const esc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- 경로 만들기 ----------
+$('build').onclick = async () => {
+  $('build').disabled = true;
+  try {
+    let s;
+    if (startMode === 'me') {
+      say('bStatus', '현재 위치 확인 중…');
+      const p = await getPosition(true);
+      s = {name: '현재 위치', lat: p.latitude, lon: p.longitude};
+    } else s = picked.s;
+    const d = picked.d;
+    say('bStatus', '경로 계산 중… (최대 1분)');
+    const title = s.name + ' → ' + d.name;
+    const q = new URLSearchParams({slat: s.lat, slon: s.lon, elat: d.lat, elon: d.lon, name: title});
+    const g = await fetch('/api/gpx?' + q);
+    if (!g.ok) throw new Error((await g.json()).error);
+    const text = await g.text();
+    gpxFile = new File([text], (d.name).replace(/[^\w가-힣]+/g, '_').slice(0, 40) + '.gpx', {type: 'application/gpx+xml'});
+    showStats(text, title);
+    showRoads(g.headers.get('X-Road-Summary'));
+    say('bStatus', '경로가 완성됐어요 ✅', 'ok');
+  } catch (e) { say('bStatus', e.message, 'err'); }
+  $('build').disabled = false;
+};
+
+function showStats(gpxText, title) {
+  const km = (/track-length = (\d+)/.exec(gpxText) || [])[1];
+  const up = (/filtered ascend = (\d+)/.exec(gpxText) || [])[1];
+  const t = (/time=((?:\d+h )?(?:\d+m )?(?:\d+s)?)/.exec(gpxText) || [])[1];
+  $('outTitle').textContent = '📍 ' + title;
+  $('dist').textContent = km ? (km / 1000).toFixed(1) + ' km' : '-';
+  $('elev').textContent = up ? up + ' m' : '-';
+  $('time').textContent = t ? t.replace(/ \d+s$/, '') : '-';
+  $('out').hidden = false;
+}
+
+function showRoads(h) {
+  const box = $('roads'); box.innerHTML = '';
+  let j = null;
+  try { j = JSON.parse(decodeURIComponent(h || '')); } catch (e) {}
+  if (!j) return;
+  const r = j.roads;
+  if (r) {
+    const bad = r.forbidden > 0;
+    box.innerHTML = '🛣️ 국도·간선 <b>' + r.main + '</b> km · 지방도·소로 <b>' + r.local + '</b> km'
+      + (r.offroad ? ' · 자전거길·보행로 <b>' + r.offroad + '</b> km' : '')
+      + '<br>' + (bad ? '<span class="warn">🚫 자동차전용도로 ' + r.forbidden + ' km</span>'
+                      : '<span class="good">✅ 자동차전용도로 구간 없음</span>');
+  }
+  (j.warnings || []).forEach(w => { const d = document.createElement('div'); d.className = 'warn'; d.textContent = '⚠️ ' + w; box.append(d); });
+}
+
+// ---------- 보내기 / 저장 ----------
+// 크롬은 .gpx 형식의 공유를 막는 경우가 있어, 막히면 저장 방식으로 자동 전환합니다.
+$('share').onclick = async () => {
+  const variants = [gpxFile, new File([gpxFile], gpxFile.name, {type: 'text/plain'})];
+  for (const f of variants) {
+    try {
+      if (navigator.canShare && navigator.canShare({files: [f]})) {
+        await navigator.share({files: [f], title: f.name});
+        return;
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  download();
+};
+$('download').onclick = download;
+function download() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name;
+  document.body.append(a); a.click(); a.remove();
+  say('bStatus', '저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
+}
+
+// ---------- 지도 앱 '공유'로 들어온 내용 → 목적지에 채우고 바로 찾기 ----------
+const p = new URLSearchParams(location.search);
+const shared = [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join('\n');
+if (shared) { $('dText').value = shared; find('d'); history.replaceState(null, '', '/'); }
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+</body>
+</html>

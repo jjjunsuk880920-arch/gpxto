@@ -64,18 +64,40 @@ def haversine_km(a, b):
     return 6371 * 2 * asin(sqrt(h))
 
 
-def geocode(query: str, near=None, limit: int = 5):
-    """상호/주소 -> 후보 장소 목록. 현재 위치(near)가 있으면 가까운 곳을 우선한다.
-    Photon(위치 가중치 지원) + Nominatim 결과를 합친다."""
+class NeedPin(Exception):
+    """이름/주소로는 정확한 위치를 못 찾음 -> 화면에서 지도에 직접 찍게 한다."""
+    def __init__(self, message, hint=None, name=None):
+        super().__init__(message)
+        self.hint, self.name = hint, name
+
+
+# 이름이 맞는지 검사할 때 무시할 흔한 단어
+GENERIC = {"hotel", "boutique", "resort", "restaurant", "cafe", "coffee", "shop", "store", "road", "street",
+           "soi", "the", "and", "house", "hostel", "inn", "villa", "spa", "mall", "center", "centre", "lane",
+           "district", "province", "city", "chiang", "mai", "bangkok", "seoul", "thailand", "korea"}
+
+
+def relevant(query: str, c: dict) -> bool:
+    """영문 검색어의 핵심 단어가 결과에 하나도 없으면 엉뚱한 곳(예: 같은 'Boutique Hotel'의 호주 호텔)으로 보고 제외"""
+    sig = [t for t in re.findall(r"[a-z]{3,}", query.lower()) if t not in GENERIC]
+    if not sig:
+        return True
+    blob = (c.get("name", "") + " " + c.get("addr", "")).lower()
+    return any(t in blob for t in sig)
+
+
+def geocode(query: str, near=None, limit: int = 5, within=None):
+    """상호/주소 -> 후보 장소 목록 (영어 표기).
+    near=(lat,lon): 가까운 곳 우선, within=(lat,lon,km): 그 반경 밖 결과는 제외.
+    Photon + Nominatim 결과를 합치고, 이름이 안 맞는 결과는 걸러낸다."""
     if not query.strip():
         return []
+    center = near or (within[:2] if within else None)
     out = []
     try:
-        params = {"q": query, "limit": limit}
-        if near:
-            params.update(lat=near[0], lon=near[1])
-            if not (32 < near[0] < 39.5 and 123 < near[1] < 132.5):  # 한국 밖이면 영어 표기
-                params["lang"] = "en"
+        params = {"q": query, "limit": limit, "lang": "en"}
+        if center:
+            params.update(lat=center[0], lon=center[1])
         r = requests.get("https://photon.komoot.io/api/", params=params, headers=UA, timeout=15)
         if r.status_code == 200:
             for f in r.json().get("features", []):
@@ -86,17 +108,21 @@ def geocode(query: str, near=None, limit: int = 5):
     except (requests.RequestException, ValueError, KeyError, AttributeError, TypeError):
         pass
     try:
-        params = {"q": query, "format": "jsonv2", "limit": limit, "accept-language": "ko"}
-        if near:  # 현재 위치 주변(약 ±1도)을 우선 (경계 밖 결과도 허용)
-            params["viewbox"] = f"{near[1]-1},{near[0]+1},{near[1]+1},{near[0]-1}"
+        params = {"q": query, "format": "jsonv2", "limit": limit, "accept-language": "en", "namedetails": 1}
+        if center:
+            params["viewbox"] = f"{center[1]-1},{center[0]+1},{center[1]+1},{center[0]-1}"
         r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=UA, timeout=20)
         if r.status_code == 200:
             for x in r.json():
                 parts = [p.strip() for p in x.get("display_name", "").split(",")]
-                out.append({"name": x.get("name") or parts[0], "addr": ", ".join(parts[1:4]),
+                nd = x.get("namedetails") or {}
+                out.append({"name": nd.get("name:en") or parts[0], "addr": ", ".join(parts[1:4]),
                             "lat": float(x["lat"]), "lon": float(x["lon"])})
     except (requests.RequestException, ValueError, KeyError, AttributeError, TypeError):
         pass
+    out = [c for c in out if relevant(query, c)]
+    if within:
+        out = [c for c in out if haversine_km(within[:2], (c["lat"], c["lon"])) <= within[2]]
     if near:
         for c in out:
             c["km"] = round(haversine_km(near, (c["lat"], c["lon"])), 1)
@@ -112,8 +138,53 @@ def page_title(html: str):
     return "" if t in ("", "네이버지도", "카카오맵", "Google Maps", "Google 지도") else t
 
 
+COUNTRY_WORDS = {"태국", "thailand", "대한민국", "south korea", "korea", "일본", "japan", "베트남", "vietnam",
+                 "대만", "taiwan", "라오스", "laos", "말레이시아", "malaysia", "싱가포르", "singapore"}
+
+
+def fid_anchor(url: str):
+    """구글 장소 고유번호(!1s0x...:0x...)의 앞부분은 S2 셀 번호라, 대략 몇 km 오차의 위치를 복원할 수 있다.
+    정확한 좌표는 아니고 '이 동네' 정도의 기준점으로만 쓴다."""
+    m = re.search(r"0x([0-9a-f]{8,16}):0x[0-9a-f]+", urllib.parse.unquote(url))
+    if not m:
+        return None
+    try:
+        import s2sphere
+        cell = s2sphere.CellId(int(m.group(1), 16))
+        if not cell.is_valid():
+            return None
+        ll = cell.to_lat_lng()
+        return round(ll.lat().degrees, 5), round(ll.lng().degrees, 5)
+    except Exception:
+        return None
+
+
+def parse_google_place(url: str):
+    """/maps/place/이름,+주소,+동네,+도시+우편번호+국가/ -> (이름, 동네 문자열)"""
+    m = re.search(r"/place/([^/@?]+)", urllib.parse.unquote(url))
+    if not m:
+        return None, ""
+    parts = [x.strip() for x in m.group(1).replace("+", " ").split(",") if x.strip()]
+    if parts:
+        parts[-1] = re.sub(r"\s*\d{4,6}\b.*$", "", parts[-1]).strip()   # 우편번호 이하(국가) 제거
+        parts = [x for x in parts if x and x.lower() not in COUNTRY_WORDS]
+    name = None
+    for x in (parts[:-2] if len(parts) > 3 else parts):
+        if not re.match(r"^\d", x) and re.search(r"[A-Za-z\uAC00-\uD7A3\u0E00-\u0E7F]", x):
+            name = x
+            break
+    return name, ", ".join(parts[-2:])
+
+
+def split_address_shop(s: str):
+    """'다산로 137-1 교촌치킨 약수점' 형태를 (주소, 상호)로 나눔"""
+    m = re.match(r"^(.*?\d+(?:-\d+)?)\s+(\S.*)$", s)
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
 def find_candidates(text: str, near=None):
-    """붙여넣은 내용(구글/네이버/카카오 링크, 상호, 주소, 좌표) -> 후보 장소 목록"""
+    """붙여넣은 내용(구글/네이버/카카오 링크, 상호, 주소, 좌표) -> 후보 장소 목록.
+    정확한 위치를 못 찾으면 NeedPin 예외(지도에서 직접 찍도록 안내)."""
     text = (text or "").strip()
     if not text:
         raise ValueError("링크나 장소 이름을 입력해 주세요.")
@@ -134,50 +205,58 @@ def find_candidates(text: str, near=None):
     # 좌표 직접 입력
     m = re.fullmatch(r"(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", text)
     if m:
-        add({"name": "목적지", "addr": text, "lat": float(m.group(1)), "lon": float(m.group(2))})
+        add({"name": "Pinned location", "addr": text, "lat": float(m.group(1)), "lon": float(m.group(2))})
         return cands
 
-    title = ""
+    title, anchor, within, pname = "", None, None, None
     if url:
         coords = parse_coords(url)
         final_url, html = url, ""
         if coords is None or "google" not in url:
             try:
-                r = requests.get(url, headers={**UA, "Accept-Language": "ko"},
+                r = requests.get(url, headers={**UA, "Accept-Language": "en"},
                                  allow_redirects=True, timeout=15)
                 final_url, html = r.url, r.text[:300000]
             except requests.RequestException:
                 pass
             coords = parse_coords(final_url)
         if coords:
-            add({"name": parse_name(final_url, text), "addr": "구글맵 링크", "lat": coords[0], "lon": coords[1]})
+            add({"name": parse_name(final_url, text), "addr": "Google Maps link", "lat": coords[0], "lon": coords[1]})
         title = page_title(html) if html else ""
-        # 구글 단축 링크는 좌표 없이 '주소 상호'만 주는 경우가 많다 -> 그 이름으로 검색
+        # 구글 단축 링크는 좌표 없이 '이름, 주소, 동네'만 주는 경우가 많다
         if not coords and "google" in final_url:
-            gname = parse_name(final_url, "")
-            if gname != "목적지":
-                lines = [gname] + lines
+            pname, locality = parse_google_place(final_url)
+            anchor = fid_anchor(final_url)
+            if not anchor and locality:                      # 고유번호를 못 읽으면 동네 이름으로 기준점
+                g = geocode(locality, limit=1)
+                anchor = (g[0]["lat"], g[0]["lon"]) if g else None
+            if pname:
+                lines = [pname] + lines
+            if anchor:
+                within = (anchor[0], anchor[1], 10)           # 기준점 반경 10km 안에서만 검색
 
-    # 링크에서 좌표를 못 얻었거나 상호/주소만 있는 경우: 이름/주소로 검색
     if not cands:
         queries = []
         for ln in lines[:2]:
             queries.append(ln)
-            # "주소 번지 상호" 형태면 주소 / 상호로도 나눠서 시도 (예: 다산로 137-1 교촌치킨 약수점)
-            m = re.match(r"^(.*?\d+(?:-\d+)?)\s+(\S.*)$", ln)
-            if m:
-                queries += [m.group(1), m.group(2)]
+            addr, shop = split_address_shop(ln)               # 주소/상호 따로도 시도
+            if addr:
+                queries += [addr, shop]
         if len(lines) > 1:
             queries.insert(0, " ".join(lines[:2]))
         if title:
             queries.append(title)
         for q in dict.fromkeys(queries):
-            for c in geocode(q, near):
+            for c in geocode(q, near=anchor or near, within=within):
                 add(c)
             if cands:
                 break
     if not cands:
-        raise ValueError("장소를 찾지 못했습니다. 상호와 주소를 같이 붙여넣거나 구글맵 링크를 사용해 보세요.")
+        name = pname or (lines[0] if lines else None)
+        hint = {"lat": anchor[0], "lon": anchor[1]} if anchor else None
+        msg = ("이 장소는 지도 데이터에서 찾지 못했어요. 지도에서 직접 위치를 찍어 주세요." if name
+               else "장소를 찾지 못했습니다. 지도에서 직접 찍거나 다른 이름으로 시도해 보세요.")
+        raise NeedPin(msg, hint, name)
     return cands[:5]
 
 
@@ -307,13 +386,15 @@ def sw():
 
 @app.get("/api/find")
 def api_find():
+    near = None
     try:
-        near = None
-        try:
-            near = (float(request.args["lat"]), float(request.args["lon"]))
-        except (KeyError, ValueError):
-            pass
+        near = (float(request.args["lat"]), float(request.args["lon"]))
+    except (KeyError, ValueError):
+        pass
+    try:
         return jsonify(candidates=find_candidates(request.args.get("text", ""), near))
+    except NeedPin as e:   # 못 찾음 -> 화면이 지도 찍기로 넘어가도록 안내
+        return jsonify(candidates=[], message=str(e), hint=e.hint, name=e.name)
     except Exception as e:
         return jsonify(error=str(e)), 400
 
