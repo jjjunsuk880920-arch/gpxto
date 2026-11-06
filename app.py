@@ -121,17 +121,27 @@ def find_candidates(text: str):
                 final_url, html = r.url, r.text[:300000]
             except requests.RequestException:
                 pass
-            coords = parse_coords(final_url) or (parse_coords(html) if "google" in final_url else None)
+            coords = parse_coords(final_url)
         if coords:
             add({"name": parse_name(final_url, text), "addr": "구글맵 링크", "lat": coords[0], "lon": coords[1]})
         title = page_title(html) if html else ""
+        # 구글 단축 링크는 좌표 없이 '주소 상호'만 주는 경우가 많다 -> 그 이름으로 검색
+        if not coords and "google" in final_url:
+            gname = parse_name(final_url, "")
+            if gname != "목적지":
+                lines = [gname] + lines
 
     # 링크에서 좌표를 못 얻었거나 상호/주소만 있는 경우: 이름/주소로 검색
     if not cands:
         queries = []
-        if lines:
-            queries.append(" ".join(lines[:2]))
-            queries += lines[:2]
+        for ln in lines[:2]:
+            queries.append(ln)
+            # "주소 번지 상호" 형태면 주소 / 상호로도 나눠서 시도 (예: 다산로 137-1 교촌치킨 약수점)
+            m = re.match(r"^(.*?\d+(?:-\d+)?)\s+(\S.*)$", ln)
+            if m:
+                queries += [m.group(1), m.group(2)]
+        if len(lines) > 1:
+            queries.insert(0, " ".join(lines[:2]))
         if title:
             queries.append(title)
         for q in dict.fromkeys(queries):
