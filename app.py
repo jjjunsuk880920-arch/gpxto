@@ -283,8 +283,8 @@ def is_forbidden(t: dict) -> bool:
     return t.get("bicycle") in ("no", "dismount") and hw in MAIN
 
 
-def _brouter_geojson(start, end, nogos):
-    params = {"lonlats": f"{start[1]},{start[0]}|{end[1]},{end[0]}", "profile": BROUTER_PROFILE,
+def _brouter_geojson(start, end, nogos, profile=None):
+    params = {"lonlats": f"{start[1]},{start[0]}|{end[1]},{end[0]}", "profile": profile or BROUTER_PROFILE,
               "alternativeidx": 0, "format": "geojson"}
     if nogos:
         params["nogos"] = "|".join(f"{lo},{la},{rad}" for lo, la, rad in nogos)
@@ -300,7 +300,7 @@ def analyze_roads(feature):
     if not msgs:
         return None, []
     ix = {h: i for i, h in enumerate(msgs[0])}
-    km = {"main": 0.0, "local": 0.0, "offroad": 0.0, "forbidden": 0.0, "unpaved": 0.0}
+    km = {"main": 0.0, "local": 0.0, "bike": 0.0, "offroad": 0.0, "forbidden": 0.0, "unpaved": 0.0}
     bad = []
     for m in msgs[1:]:
         t = _tags(m[ix["WayTags"]]); d = int(m[ix["Distance"]]) / 1000
@@ -308,6 +308,8 @@ def analyze_roads(feature):
         if is_forbidden(t):
             km["forbidden"] += d
             bad.append((int(m[ix["Longitude"]]) / 1e6, int(m[ix["Latitude"]]) / 1e6))
+        elif hw == "cycleway" or t.get("bicycle") == "designated" or (hw in OFFROAD and t.get("bicycle") == "yes"):
+            km["bike"] += d                                   # 자전거도로
         elif hw in MAIN: km["main"] += d
         elif hw in OFFROAD: km["offroad"] += d
         else: km["local"] += d
@@ -336,12 +338,12 @@ def to_gpx(feature, name: str) -> str:
             f"<metadata><name>{n}</name></metadata><trk><name>{n}</name><trkseg>{pts}</trkseg></trk></gpx>")
 
 
-def build_route(start, end, name: str):
+def build_route(start, end, name: str, profile=None, with_feature=False):
     """도로 종류를 검사하고, 자동차전용도로가 섞이면 그 구간을 피해 다시 계산한다.
     반환: (gpx 문자열, 도로 요약 dict)"""
     nogos, info = [], None
     for attempt in range(MAX_RETRY + 1):
-        feature = _brouter_geojson(start, end, nogos)["features"][0]
+        feature = _brouter_geojson(start, end, nogos, profile)["features"][0]
         info, bad = analyze_roads(feature)
         if info is None or not bad:
             break
@@ -358,7 +360,62 @@ def build_route(start, end, name: str):
                     "출발지/목적지가 그 도로 위에 있는지 확인하세요.")
     if info and info["unpaved"] >= 0.5:
         warn.append(f"비포장 추정 구간이 약 {info['unpaved']}km 있습니다.")
+    if with_feature:
+        return to_gpx(feature, name), {"roads": info, "warnings": warn}, feature
     return to_gpx(feature, name), {"roads": info, "warnings": warn}
+
+
+# 경로 선택지: 같은 출발/도착을 성격이 다른 설정으로 계산해 보여준다
+ROUTE_OPTIONS = [
+    {"id": "bike", "profile": "trekking", "label": "자전거도로 우선",
+     "desc": "자전거도로가 있으면 조금 돌아가도 그쪽으로"},
+    {"id": "road", "profile": "fastbike", "label": "도로 위주 (빠름)",
+     "desc": "포장도로·국도 위주로 빠르게"},
+    {"id": "bikemax", "profile": "safety", "label": "자전거도로 최대",
+     "desc": "차도를 최대한 피함. 더 많이 돌아갈 수 있음"},
+]
+
+
+def simplify(coords, max_pts=400):
+    step = max(1, len(coords) // max_pts)
+    pts = [[round(c[1], 5), round(c[0], 5)] for c in coords[::step]]
+    last = [round(coords[-1][1], 5), round(coords[-1][0], 5)]
+    if pts[-1] != last:
+        pts.append(last)
+    return pts
+
+
+def build_options(start, end, name):
+    """선택지별 경로를 동시에 계산. 거의 같은 경로는 하나로 합친다."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(opt):
+        try:
+            gpx, summ, f = build_route(start, end, name, opt["profile"], with_feature=True)
+        except Exception as e:
+            return {**opt, "error": str(e)}
+        pr = f["properties"]
+        return {**opt, "km": round(int(pr.get("track-length", 0)) / 1000, 1),
+                "ascent": int(pr.get("filtered ascend", 0)), "time": _fmt_time(pr.get("total-time", 0)),
+                "roads": summ["roads"], "warnings": summ["warnings"],
+                "line": simplify(f["geometry"]["coordinates"]), "gpx": gpx}
+
+    with ThreadPoolExecutor(len(ROUTE_OPTIONS)) as ex:
+        results = list(ex.map(one, ROUTE_OPTIONS))
+    out = []
+    for r in results:
+        if "error" in r:
+            continue
+        dup = next((o for o in out if abs(o["km"] - r["km"]) <= max(0.3, o["km"] * 0.02)
+                    and (o["roads"] or {}).get("bike") == (r["roads"] or {}).get("bike")), None)
+        if dup:
+            dup["label"] += " · " + r["label"]               # 같은 길이면 이름만 합침
+            continue
+        r.pop("profile", None)
+        out.append(r)
+    if not out:
+        raise RuntimeError(next((r["error"] for r in results if "error" in r), "경로 계산 실패"))
+    return out
 
 
 def safe_filename(name: str) -> str:
@@ -397,6 +454,21 @@ def api_find():
         return jsonify(candidates=[], message=str(e), hint=e.hint, name=e.name)
     except Exception as e:
         return jsonify(error=str(e)), 400
+
+
+@app.get("/api/routes")
+def api_routes():
+    try:
+        slat, slon = float(request.args["slat"]), float(request.args["slon"])
+        elat, elon = float(request.args["elat"]), float(request.args["elon"])
+    except (KeyError, ValueError):
+        return jsonify(error="좌표가 올바르지 않습니다."), 400
+    name = request.args.get("name", "목적지")
+    try:
+        return jsonify(options=build_options((slat, slon), (elat, elon), name),
+                       filename=safe_filename(name) + ".gpx")
+    except Exception as e:
+        return jsonify(error=str(e)), 502
 
 
 @app.get("/api/gpx")
