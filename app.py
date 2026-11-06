@@ -57,22 +57,49 @@ def parse_name(url: str, shared_text: str = ""):
     return "목적지"
 
 
-def geocode(query: str, limit: int = 5):
-    """상호/주소 -> 후보 장소 목록 (OpenStreetMap Nominatim)"""
+def haversine_km(a, b):
+    from math import radians, sin, cos, asin, sqrt
+    la1, lo1, la2, lo2 = map(radians, (a[0], a[1], b[0], b[1]))
+    h = sin((la2 - la1) / 2) ** 2 + cos(la1) * cos(la2) * sin((lo2 - lo1) / 2) ** 2
+    return 6371 * 2 * asin(sqrt(h))
+
+
+def geocode(query: str, near=None, limit: int = 5):
+    """상호/주소 -> 후보 장소 목록. 현재 위치(near)가 있으면 가까운 곳을 우선한다.
+    Photon(위치 가중치 지원) + Nominatim 결과를 합친다."""
     if not query.strip():
         return []
-    r = requests.get(
-        "https://nominatim.openstreetmap.org/search",
-        params={"q": query, "format": "jsonv2", "limit": limit, "accept-language": "ko"},
-        headers=UA, timeout=20,
-    )
-    if r.status_code != 200:
-        return []
     out = []
-    for x in r.json():
-        parts = [p.strip() for p in x.get("display_name", "").split(",")]
-        out.append({"name": x.get("name") or parts[0], "addr": ", ".join(parts[1:4]),
-                    "lat": float(x["lat"]), "lon": float(x["lon"])})
+    try:
+        params = {"q": query, "limit": limit}
+        if near:
+            params.update(lat=near[0], lon=near[1])
+            if not (32 < near[0] < 39.5 and 123 < near[1] < 132.5):  # 한국 밖이면 영어 표기
+                params["lang"] = "en"
+        r = requests.get("https://photon.komoot.io/api/", params=params, headers=UA, timeout=15)
+        if r.status_code == 200:
+            for f in r.json().get("features", []):
+                pr, (lon, lat) = f["properties"], f["geometry"]["coordinates"]
+                addr = ", ".join(x for x in (pr.get("street"), pr.get("district") or pr.get("city") or pr.get("county"),
+                                             pr.get("state"), pr.get("country")) if x)
+                out.append({"name": pr.get("name") or addr or query, "addr": addr, "lat": lat, "lon": lon})
+    except (requests.RequestException, ValueError, KeyError, AttributeError, TypeError):
+        pass
+    try:
+        params = {"q": query, "format": "jsonv2", "limit": limit, "accept-language": "ko"}
+        if near:  # 현재 위치 주변(약 ±1도)을 우선 (경계 밖 결과도 허용)
+            params["viewbox"] = f"{near[1]-1},{near[0]+1},{near[1]+1},{near[0]-1}"
+        r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers=UA, timeout=20)
+        if r.status_code == 200:
+            for x in r.json():
+                parts = [p.strip() for p in x.get("display_name", "").split(",")]
+                out.append({"name": x.get("name") or parts[0], "addr": ", ".join(parts[1:4]),
+                            "lat": float(x["lat"]), "lon": float(x["lon"])})
+    except (requests.RequestException, ValueError, KeyError, AttributeError, TypeError):
+        pass
+    if near:
+        for c in out:
+            c["km"] = round(haversine_km(near, (c["lat"], c["lon"])), 1)
     return out
 
 
@@ -85,7 +112,7 @@ def page_title(html: str):
     return "" if t in ("", "네이버지도", "카카오맵", "Google Maps", "Google 지도") else t
 
 
-def find_candidates(text: str):
+def find_candidates(text: str, near=None):
     """붙여넣은 내용(구글/네이버/카카오 링크, 상호, 주소, 좌표) -> 후보 장소 목록"""
     text = (text or "").strip()
     if not text:
@@ -99,7 +126,7 @@ def find_candidates(text: str):
     cands, seen = [], set()
 
     def add(c):
-        k = (round(c["lat"], 4), round(c["lon"], 4))
+        k = (round(c["lat"], 3), round(c["lon"], 3))
         if k not in seen:
             seen.add(k)
             cands.append(c)
@@ -145,7 +172,7 @@ def find_candidates(text: str):
         if title:
             queries.append(title)
         for q in dict.fromkeys(queries):
-            for c in geocode(q):
+            for c in geocode(q, near):
                 add(c)
             if cands:
                 break
@@ -213,7 +240,12 @@ def sw():
 @app.get("/api/find")
 def api_find():
     try:
-        return jsonify(candidates=find_candidates(request.args.get("text", "")))
+        near = None
+        try:
+            near = (float(request.args["lat"]), float(request.args["lon"]))
+        except (KeyError, ValueError):
+            pass
+        return jsonify(candidates=find_candidates(request.args.get("text", ""), near))
     except Exception as e:
         return jsonify(error=str(e)), 400
 
