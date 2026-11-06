@@ -2,10 +2,10 @@
 
 흐름: 구글맵 공유 텍스트/링크 -> 좌표 추출 -> BRouter(도로 자전거)로 경로 계산 -> GPX 반환
 """
+import json
 import os
 import re
 import urllib.parse
-import xml.etree.ElementTree as ET
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -181,37 +181,105 @@ def find_candidates(text: str, near=None):
     return cands[:5]
 
 
-# ---------- 2. 경로 계산 + GPX ----------
+# ---------- 2. 경로 계산 + 도로 검사 + GPX ----------
 
-def build_gpx(start, end, name: str) -> str:
-    lonlats = f"{start[1]},{start[0]}|{end[1]},{end[0]}"  # BRouter는 경도,위도 순서
-    r = requests.get(
-        BROUTER_URL,
-        params={"lonlats": lonlats, "profile": BROUTER_PROFILE,
-                "alternativeidx": 0, "format": "gpx"},
-        headers=UA, timeout=60,
-    )
+MAIN = {"trunk", "trunk_link", "primary", "primary_link"}            # 국도·간선
+LOCAL = {"secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
+         "residential", "service", "living_street", "road"}          # 지방도·소로
+OFFROAD = {"cycleway", "path", "footway", "pedestrian", "steps", "bridleway"}
+UNPAVED = {"unpaved", "gravel", "dirt", "ground", "sand", "mud", "compacted",
+           "fine_gravel", "grass", "earth", "pebblestone"}
+MAX_RETRY = 3
+
+
+def _tags(s: str) -> dict:
+    return dict(t.split("=", 1) for t in (s or "").split() if "=" in t)
+
+
+def is_forbidden(t: dict) -> bool:
+    """자동차전용도로/고속도로 등 자전거가 들어가면 안 되는 도로"""
+    hw = t.get("highway", "")
+    if hw in ("motorway", "motorway_link") or t.get("motorroad") == "yes":
+        return True
+    return t.get("bicycle") in ("no", "dismount") and hw in MAIN
+
+
+def _brouter_geojson(start, end, nogos):
+    params = {"lonlats": f"{start[1]},{start[0]}|{end[1]},{end[0]}", "profile": BROUTER_PROFILE,
+              "alternativeidx": 0, "format": "geojson"}
+    if nogos:
+        params["nogos"] = "|".join(f"{lo},{la},{rad}" for lo, la, rad in nogos)
+    r = requests.get(BROUTER_URL, params=params, headers=UA, timeout=90)
     if r.status_code != 200:
         raise RuntimeError(f"경로 계산 실패: {r.text[:200]}")
-    return rename_track(r.text, name)
+    return r.json()
 
 
-def rename_track(gpx_text: str, name: str) -> str:
-    """GPX 안의 트랙 이름을 '목적지 이름'으로 바꾼다 (가민/IGPSPORT에서 보이는 이름)."""
-    ET.register_namespace("", "http://www.topografix.com/GPX/1/1")
-    ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
-    comment = re.search(r"<!--.*?-->", gpx_text, re.S)  # 거리/고도/시간 요약 주석 보존
-    root = ET.fromstring(gpx_text)
-    ns = {"g": "http://www.topografix.com/GPX/1/1"}
-    trk = root.find("g:trk", ns)
-    if trk is not None:
-        n = trk.find("g:name", ns)
-        if n is None:
-            n = ET.SubElement(trk, "{http://www.topografix.com/GPX/1/1}name")
-            trk.insert(0, n)
-        n.text = name
-    body = ET.tostring(root, encoding="unicode")
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + (comment.group(0) + "\n" if comment else "") + body
+def analyze_roads(feature):
+    """BRouter 구간 정보 -> 도로 종류별 거리(km), 금지 도로 구간 위치"""
+    msgs = feature["properties"].get("messages") or []
+    if not msgs:
+        return None, []
+    ix = {h: i for i, h in enumerate(msgs[0])}
+    km = {"main": 0.0, "local": 0.0, "offroad": 0.0, "forbidden": 0.0, "unpaved": 0.0}
+    bad = []
+    for m in msgs[1:]:
+        t = _tags(m[ix["WayTags"]]); d = int(m[ix["Distance"]]) / 1000
+        hw = t.get("highway", "")
+        if is_forbidden(t):
+            km["forbidden"] += d
+            bad.append((int(m[ix["Longitude"]]) / 1e6, int(m[ix["Latitude"]]) / 1e6))
+        elif hw in MAIN: km["main"] += d
+        elif hw in OFFROAD: km["offroad"] += d
+        else: km["local"] += d
+        if t.get("surface") in UNPAVED or hw == "track" or t.get("tracktype") in ("grade3", "grade4", "grade5"):
+            km["unpaved"] += d
+    return {k: round(v, 1) for k, v in km.items()}, bad
+
+
+def _fmt_time(sec: int) -> str:
+    h, rem = divmod(int(sec), 3600); m, s = divmod(rem, 60)
+    return (f"{h}h " if h else "") + (f"{m}m " if h or m else "") + f"{s}s"
+
+
+def to_gpx(feature, name: str) -> str:
+    from xml.sax.saxutils import escape
+    pr = feature["properties"]
+    pts = "".join(
+        f'<trkpt lat="{c[1]:.6f}" lon="{c[0]:.6f}">' + (f"<ele>{c[2]:.1f}</ele>" if len(c) > 2 else "") + "</trkpt>"
+        for c in feature["geometry"]["coordinates"])
+    # 거리/고도/시간 요약 주석 (화면 표시에 사용)
+    note = (f"<!-- track-length = {pr.get('track-length', 0)} filtered ascend = {pr.get('filtered ascend', 0)} "
+            f"plain-ascend = {pr.get('plain-ascend', 0)} time={_fmt_time(pr.get('total-time', 0))} -->")
+    n = escape(name)
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n' + note + "\n"
+            '<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="GPXTo (BRouter)">'
+            f"<metadata><name>{n}</name></metadata><trk><name>{n}</name><trkseg>{pts}</trkseg></trk></gpx>")
+
+
+def build_route(start, end, name: str):
+    """도로 종류를 검사하고, 자동차전용도로가 섞이면 그 구간을 피해 다시 계산한다.
+    반환: (gpx 문자열, 도로 요약 dict)"""
+    nogos, info = [], None
+    for attempt in range(MAX_RETRY + 1):
+        feature = _brouter_geojson(start, end, nogos)["features"][0]
+        info, bad = analyze_roads(feature)
+        if info is None or not bad:
+            break
+        if attempt == MAX_RETRY:
+            break
+        # 금지 도로 지점 주변(반경 60m)을 막고 다시 계산
+        for lo, la in bad[::max(1, len(bad) // 8)]:
+            nogos.append((round(lo, 6), round(la, 6), 60))
+    warn = []
+    if info is None:
+        warn.append("도로 종류를 확인하지 못했습니다. 경로를 직접 확인하세요.")
+    elif info["forbidden"] > 0:
+        warn.append(f"자동차전용도로 등 진입 불가 도로가 약 {info['forbidden']}km 포함됐습니다. "
+                    "출발지/목적지가 그 도로 위에 있는지 확인하세요.")
+    if info and info["unpaved"] >= 0.5:
+        warn.append(f"비포장 추정 구간이 약 {info['unpaved']}km 있습니다.")
+    return to_gpx(feature, name), {"roads": info, "warnings": warn}
 
 
 def safe_filename(name: str) -> str:
@@ -256,14 +324,15 @@ def api_gpx():
         slat, slon = float(request.args["slat"]), float(request.args["slon"])
         elat, elon = float(request.args["elat"]), float(request.args["elon"])
         name = request.args.get("name", "목적지")
-        gpx = build_gpx((slat, slon), (elat, elon), name)
+        gpx, summary = build_route((slat, slon), (elat, elon), name)
     except (KeyError, ValueError):
         return jsonify(error="좌표가 올바르지 않습니다."), 400
     except Exception as e:
         return jsonify(error=str(e)), 502
     fn = urllib.parse.quote(safe_filename(name) + ".gpx")
     return Response(gpx, mimetype="application/gpx+xml",
-                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"})
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}",
+                             "X-Road-Summary": urllib.parse.quote(json.dumps(summary, ensure_ascii=False))})
 
 
 if __name__ == "__main__":
