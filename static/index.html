@@ -69,7 +69,7 @@
     <button id="sCustom">직접 지정</button>
   </div>
   <div id="sBox" hidden>
-    <textarea id="sText" placeholder="출발지: 지도 링크, 상호, 주소&#10;예) Nimman Road, Chiang Mai"></textarea>
+    <textarea id="sText" placeholder="출발지: 지도 링크, 상호, 주소, 플러스 코드&#10;예) Nimman Road, Chiang Mai"></textarea>
     <button id="sFind">출발지 찾기</button>
     <button id="sPin" class="sub">🗺️ 지도에서 직접 찍기</button>
     <div id="sCands"></div>
@@ -81,9 +81,16 @@
 <!-- 목적지 -->
 <div class="card">
   <h2>🔴 목적지</h2>
-  <textarea id="dText" placeholder="목적지: 지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
+  <textarea id="dText" placeholder="목적지: 지도 링크, 상호, 주소, 플러스 코드&#10;예) 남산서울타워&#10;예) RX47+R6 Chiang Mai"></textarea>
   <button id="dFind">목적지 찾기</button>
   <button id="dPin" class="sub">🗺️ 지도에서 직접 찍기</button>
+  <details style="margin-top:10px"><summary>💡 잘 못 찾을 때 (가장 정확한 방법)</summary>
+    <ol style="margin-top:8px">
+      <li>구글맵에서 장소를 열고 정보란을 아래로 내리면 <b>📍 RX47+R6 치앙마이</b> 같은 줄이 있어요 (플러스 코드)</li>
+      <li>그 줄을 길게 눌러 복사해서 붙여넣으면 <b>정확한 위치</b>로 바로 찾아요</li>
+      <li>또는 지도를 길게 눌러 나오는 <b>18.807, 98.963</b> 같은 숫자를 복사해도 돼요</li>
+    </ol>
+  </details>
   <div id="dCands"></div>
   <div class="picked" id="dPicked" hidden></div>
   <div class="status" id="dStatus"></div>
