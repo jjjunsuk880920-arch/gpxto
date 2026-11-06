@@ -17,39 +17,74 @@
   h1{font-size:26px;margin:8px 0 4px;letter-spacing:-.5px} h1 span{color:var(--acc)}
   .lead{color:var(--sub);font-size:14px;margin:0 0 18px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
-  textarea{width:100%;height:92px;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;
+  h2{font-size:15px;margin:0 0 10px;display:flex;justify-content:space-between;align-items:center}
+  h2 small{font-weight:400;color:var(--sub);font-size:12px}
+  textarea{width:100%;height:76px;background:#0e141b;color:var(--txt);border:1px solid var(--line);border-radius:10px;
            padding:12px;font-size:15px;resize:vertical;font-family:inherit}
   textarea:focus{outline:2px solid var(--acc);border-color:transparent}
   button{width:100%;padding:14px;margin-top:10px;font-size:16px;font-weight:600;border:0;border-radius:10px;
          background:var(--acc);color:#04201a;cursor:pointer}
-  button.sub{background:#1d2834;color:var(--txt)} button:disabled{opacity:.5}
+  button.sub{background:#1d2834;color:var(--txt)} button:disabled{opacity:.45;cursor:default}
+  .seg{display:flex;gap:8px} .seg button{margin:0;padding:11px;font-size:15px;background:#1d2834;color:var(--txt)}
+  .seg button.on{background:var(--acc);color:#04201a}
   .cand{display:block;width:100%;text-align:left;background:#0e141b;border:1px solid var(--line);color:var(--txt);
-        font-weight:500;padding:12px;margin-top:8px;border-radius:10px}
+        font-weight:500;padding:12px;margin-top:8px;border-radius:10px;font-size:15px}
   .cand small{display:block;color:var(--sub);font-weight:400;margin-top:2px}
   .cand.on{border-color:var(--acc);background:var(--accd)}
+  .picked{margin-top:10px;font-size:14px;color:var(--acc)}
   .status{font-size:14px;color:var(--sub);min-height:20px;margin-top:10px} .err{color:var(--err)} .ok{color:var(--acc)}
   .stat{display:flex;gap:10px;margin-top:12px} .stat div{flex:1;background:#0e141b;border-radius:10px;padding:10px;text-align:center}
   .stat b{display:block;font-size:20px;color:var(--acc)} .stat span{font-size:12px;color:var(--sub)}
+  .roads{margin-top:12px;font-size:14px;line-height:1.7;color:var(--sub)} .roads b{color:var(--txt)}
+  .roads .warn{color:var(--err)} .roads .good{color:var(--acc)}
+  .route{font-size:15px;line-height:1.7} .route b{color:var(--acc)}
   ol{margin:0;padding-left:20px;color:var(--sub);font-size:14px} li{margin:5px 0} li b{color:var(--txt)}
-  h2{font-size:15px;margin:0 0 8px} details summary{cursor:pointer;color:var(--sub);font-size:14px}
+  details summary{cursor:pointer;color:var(--sub);font-size:14px}
   .small{color:var(--sub);font-size:12px;text-align:center;margin-top:20px}
   [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <h1>GPX<span>To</span> 🚴</h1>
-<p class="lead">구글·네이버·카카오 지도 링크, 상호, 주소를 붙여넣으면 현재 위치에서 그곳까지의 도로 자전거 경로를 만들어 가민 커넥트 / IGPSPORT로 보냅니다.</p>
+<p class="lead">출발지와 목적지를 정하면 도로 자전거 경로를 만들어 가민 커넥트 / IGPSPORT로 보냅니다. 지도 링크, 상호, 주소를 붙여넣거나 검색하세요.</p>
 
+<!-- 출발지 -->
 <div class="card">
-  <textarea id="text" placeholder="지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
-  <button id="find">찾기</button>
-  <div id="cands" hidden></div>
-  <div class="status" id="status"></div>
+  <h2>🟢 출발지</h2>
+  <div class="seg">
+    <button id="sMe" class="on">현재 위치</button>
+    <button id="sCustom">직접 지정</button>
+  </div>
+  <div id="sBox" hidden>
+    <textarea id="sText" placeholder="출발지: 지도 링크, 상호, 주소&#10;예) Nimman Road, Chiang Mai"></textarea>
+    <button id="sFind">출발지 찾기</button>
+    <div id="sCands"></div>
+  </div>
+  <div class="picked" id="sPicked">📍 현재 위치에서 출발합니다 (경로 만들 때 확인)</div>
+  <div class="status" id="sStatus"></div>
+</div>
+
+<!-- 목적지 -->
+<div class="card">
+  <h2>🔴 목적지</h2>
+  <textarea id="dText" placeholder="목적지: 지도 링크, 상호, 주소를 붙여넣기&#10;예) 남산서울타워&#10;예) https://maps.app.goo.gl/..."></textarea>
+  <button id="dFind">목적지 찾기</button>
+  <div id="dCands"></div>
+  <div class="picked" id="dPicked" hidden></div>
+  <div class="status" id="dStatus"></div>
+</div>
+
+<!-- 경로 만들기 -->
+<div class="card">
+  <div class="route" id="summary">출발지와 목적지를 정해 주세요.</div>
+  <button id="build" disabled>경로 만들기</button>
+  <div class="status" id="bStatus"></div>
 </div>
 
 <div class="card" id="out" hidden>
   <h2 id="outTitle"></h2>
   <div class="stat"><div><b id="dist">-</b><span>거리</span></div><div><b id="elev">-</b><span>획득고도</span></div><div><b id="time">-</b><span>예상시간</span></div></div>
+  <div class="roads" id="roads"></div>
   <button id="share">가민 커넥트 / IGPSPORT로 보내기</button>
   <button id="download" class="sub">GPX 파일 저장</button>
 </div>
@@ -57,9 +92,9 @@
 <div class="card">
   <h2>사용 방법</h2>
   <ol>
-    <li><b>붙여넣고 찾기</b> — 지도 앱에서 공유한 링크, 또는 상호·주소</li>
-    <li><b>장소를 고르고</b> 위치 권한을 허용하면 경로 완성</li>
-    <li><b>보내기</b> 버튼 → 공유창에서 가민 커넥트 또는 IGPSPORT 선택</li>
+    <li><b>출발지</b>: 현재 위치 그대로, 또는 직접 지정</li>
+    <li><b>목적지</b>: 링크·상호·주소를 붙여넣고 찾아서 고르기</li>
+    <li><b>경로 만들기</b> → <b>보내기</b>로 가민 커넥트 / IGPSPORT 선택</li>
   </ol>
 </div>
 
@@ -69,7 +104,7 @@
     <ol style="margin-top:10px">
       <li><b>Android</b>: 크롬 메뉴(⋮) → 앱 설치</li>
       <li>설치 후 구글맵·네이버지도·카카오맵의 <b>공유</b> 창에 <b>GPXTo</b>가 나타납니다</li>
-      <li>공유로 열면 자동으로 찾기가 실행됩니다</li>
+      <li>공유로 열면 목적지가 자동으로 채워져 찾기가 실행됩니다</li>
     </ol>
   </details>
 </div>
@@ -77,76 +112,138 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const say = (m, cls='') => { $('status').className = 'status ' + cls; $('status').textContent = m; };
-let dest = null, gpxFile = null;
+const say = (id, m, cls = '') => { const e = $(id); e.className = 'status ' + cls; e.textContent = m; };
 
-// 지도 앱 '공유'로 들어온 내용을 입력창에 채우고 바로 찾기
-const p = new URLSearchParams(location.search);
-const shared = [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join('\n');
-if (shared) { $('text').value = shared; find(); history.replaceState(null, '', '/'); }
-$('find').onclick = find;
+let startMode = 'me';            // 'me' | 'custom'
+let picked = {s: null, d: null}; // 선택된 장소 {name, lat, lon}
+let me = null;                   // 현재 위치 캐시
+let gpxFile = null;
 
-async function find() {
-  $('out').hidden = true; $('cands').hidden = true; dest = null;
-  const text = $('text').value.trim();
-  if (!text) return say('링크나 장소 이름을 입력해 주세요.', 'err');
-  $('find').disabled = true; say('장소 찾는 중…');
-  try {
-    const r = await fetch('/api/find?text=' + encodeURIComponent(text));
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error);
-    renderCands(j.candidates);
-  } catch (e) { say(e.message, 'err'); }
-  $('find').disabled = false;
-}
-
-function renderCands(list) {
-  const box = $('cands'); box.innerHTML = ''; box.hidden = false;
-  list.forEach(c => {
-    const b = document.createElement('button');
-    b.className = 'cand'; b.innerHTML = '';
-    b.append(c.name); const s = document.createElement('small'); s.textContent = c.addr; b.append(s);
-    b.onclick = () => choose(c, b);
-    box.append(b);
-  });
-  say(list.length > 1 ? '목적지를 선택해 주세요.' : '목적지를 확인하고 눌러 주세요.');
-  if (list.length === 1) box.firstChild.click();
-}
-
-function getPosition() {
+function getPosition(force) {
+  if (me && !force) return Promise.resolve(me);
   return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(
-    q => res(q.coords), () => rej(new Error('현재 위치 권한을 허용해 주세요.')),
+    q => { me = q.coords; res(me); },
+    () => rej(new Error('현재 위치 권한을 허용해 주세요.')),
     {enableHighAccuracy: true, timeout: 15000}));
 }
 
-async function choose(c, btn) {
-  document.querySelectorAll('.cand').forEach(x => x.classList.remove('on')); btn.classList.add('on');
-  dest = c; $('out').hidden = true;
+// ---------- 출발지 모드 ----------
+function setMode(m) {
+  startMode = m;
+  $('sMe').classList.toggle('on', m === 'me');
+  $('sCustom').classList.toggle('on', m === 'custom');
+  $('sBox').hidden = (m === 'me');
+  $('sPicked').textContent = m === 'me' ? '📍 현재 위치에서 출발합니다 (경로 만들 때 확인)'
+    : (picked.s ? '✅ ' + picked.s.name : '출발지를 검색해서 골라 주세요.');
+  refresh();
+}
+$('sMe').onclick = () => setMode('me');
+$('sCustom').onclick = () => setMode('custom');
+
+// ---------- 장소 찾기(출발/목적 공용) ----------
+async function find(k) {   // k: 's' | 'd'
+  const text = $(k + 'Text').value.trim();
+  const st = k + 'Status', box = $(k + 'Cands');
+  box.innerHTML = ''; picked[k] = null;
+  if (k === 'd') $('dPicked').hidden = true;
+  refresh();
+  if (!text) return say(st, '링크나 장소 이름을 입력해 주세요.', 'err');
+  $(k + 'Find').disabled = true; say(st, '장소 찾는 중…');
   try {
-    say('현재 위치 확인 중…');
-    const me = await getPosition();
-    say('경로 계산 중… (최대 1분)');
-    const q = new URLSearchParams({slat: me.latitude, slon: me.longitude, elat: c.lat, elon: c.lon, name: c.name});
+    let near = '';
+    try { const p = await getPosition(); near = '&lat=' + p.latitude + '&lon=' + p.longitude; } catch (e) {}
+    const r = await fetch('/api/find?text=' + encodeURIComponent(text) + near);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    j.candidates.forEach(c => {
+      const b = document.createElement('button');
+      b.className = 'cand'; b.append(c.name);
+      const s = document.createElement('small');
+      s.textContent = (c.km != null ? c.km + ' km · ' : '') + (c.addr || ''); b.append(s);
+      b.onclick = () => choose(k, c, b);
+      box.append(b);
+    });
+    say(st, j.candidates.length > 1 ? '장소를 선택해 주세요.' : '');
+    if (j.candidates.length === 1) box.firstChild.click();
+  } catch (e) { say(st, e.message, 'err'); }
+  $(k + 'Find').disabled = false;
+}
+
+function choose(k, c, btn) {
+  document.querySelectorAll('#' + k + 'Cands .cand').forEach(x => x.classList.remove('on'));
+  btn.classList.add('on');
+  picked[k] = c; say(k + 'Status', '');
+  const el = $(k + 'Picked'); el.hidden = false; el.textContent = '✅ ' + c.name;
+  refresh();
+}
+$('sFind').onclick = () => find('s');
+$('dFind').onclick = () => find('d');
+
+// ---------- 요약 / 버튼 상태 ----------
+function startLabel() { return startMode === 'me' ? '현재 위치' : (picked.s ? picked.s.name : null); }
+function refresh() {
+  const s = startLabel(), d = picked.d ? picked.d.name : null;
+  $('out').hidden = true; say('bStatus', '');
+  $('summary').innerHTML = (s || d)
+    ? '<b>출발</b> ' + esc(s || '미정') + '<br><b>도착</b> ' + esc(d || '미정')
+    : '출발지와 목적지를 정해 주세요.';
+  $('build').disabled = !(s && d);
+}
+const esc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- 경로 만들기 ----------
+$('build').onclick = async () => {
+  $('build').disabled = true;
+  try {
+    let s;
+    if (startMode === 'me') {
+      say('bStatus', '현재 위치 확인 중…');
+      const p = await getPosition(true);
+      s = {name: '현재 위치', lat: p.latitude, lon: p.longitude};
+    } else s = picked.s;
+    const d = picked.d;
+    say('bStatus', '경로 계산 중… (최대 1분)');
+    const title = s.name + ' → ' + d.name;
+    const q = new URLSearchParams({slat: s.lat, slon: s.lon, elat: d.lat, elon: d.lon, name: title});
     const g = await fetch('/api/gpx?' + q);
     if (!g.ok) throw new Error((await g.json()).error);
     const text = await g.text();
-    gpxFile = new File([text], c.name.replace(/[^\w가-힣]+/g, '_') + '.gpx', {type: 'application/gpx+xml'});
-    showStats(text, c);
-    say('경로가 완성됐어요 ✅', 'ok');
-  } catch (e) { say(e.message, 'err'); }
-}
+    gpxFile = new File([text], (d.name).replace(/[^\w가-힣]+/g, '_').slice(0, 40) + '.gpx', {type: 'application/gpx+xml'});
+    showStats(text, title);
+    showRoads(g.headers.get('X-Road-Summary'));
+    say('bStatus', '경로가 완성됐어요 ✅', 'ok');
+  } catch (e) { say('bStatus', e.message, 'err'); }
+  $('build').disabled = false;
+};
 
-function showStats(gpxText, c) {
+function showStats(gpxText, title) {
   const km = (/track-length = (\d+)/.exec(gpxText) || [])[1];
   const up = (/filtered ascend = (\d+)/.exec(gpxText) || [])[1];
-  const t = (/time=([^ \n]+(?: \d+s)?)/.exec(gpxText) || [])[1];
-  $('outTitle').textContent = '📍 ' + c.name;
+  const t = (/time=((?:\d+h )?(?:\d+m )?(?:\d+s)?)/.exec(gpxText) || [])[1];
+  $('outTitle').textContent = '📍 ' + title;
   $('dist').textContent = km ? (km / 1000).toFixed(1) + ' km' : '-';
   $('elev').textContent = up ? up + ' m' : '-';
   $('time').textContent = t ? t.replace(/ \d+s$/, '') : '-';
   $('out').hidden = false;
 }
 
+function showRoads(h) {
+  const box = $('roads'); box.innerHTML = '';
+  let j = null;
+  try { j = JSON.parse(decodeURIComponent(h || '')); } catch (e) {}
+  if (!j) return;
+  const r = j.roads;
+  if (r) {
+    const bad = r.forbidden > 0;
+    box.innerHTML = '🛣️ 국도·간선 <b>' + r.main + '</b> km · 지방도·소로 <b>' + r.local + '</b> km'
+      + (r.offroad ? ' · 자전거길·보행로 <b>' + r.offroad + '</b> km' : '')
+      + '<br>' + (bad ? '<span class="warn">🚫 자동차전용도로 ' + r.forbidden + ' km</span>'
+                      : '<span class="good">✅ 자동차전용도로 구간 없음</span>');
+  }
+  (j.warnings || []).forEach(w => { const d = document.createElement('div'); d.className = 'warn'; d.textContent = '⚠️ ' + w; box.append(d); });
+}
+
+// ---------- 보내기 / 저장 ----------
 // 크롬은 .gpx 형식의 공유를 막는 경우가 있어, 막히면 저장 방식으로 자동 전환합니다.
 $('share').onclick = async () => {
   const variants = [gpxFile, new File([gpxFile], gpxFile.name, {type: 'text/plain'})];
@@ -157,7 +254,7 @@ $('share').onclick = async () => {
         return;
       }
     } catch (e) {
-      if (e.name === 'AbortError') return;   // 사용자가 공유창을 닫음
+      if (e.name === 'AbortError') return;
     }
   }
   download();
@@ -167,8 +264,14 @@ function download() {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(gpxFile); a.download = gpxFile.name;
   document.body.append(a); a.click(); a.remove();
-  say('저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
+  say('bStatus', '저장했어요 📥 알림이나 "다운로드" 폴더에서 .gpx 파일을 눌러 가민 커넥트 / IGPSPORT로 여세요. 안 열리면 각 앱의 코스(경로) 가져오기 메뉴에서 이 파일을 선택하세요.', 'ok');
 }
+
+// ---------- 지도 앱 '공유'로 들어온 내용 → 목적지에 채우고 바로 찾기 ----------
+const p = new URLSearchParams(location.search);
+const shared = [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join('\n');
+if (shared) { $('dText').value = shared; find('d'); history.replaceState(null, '', '/'); }
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script>
 </body>
